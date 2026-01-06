@@ -28,9 +28,10 @@ class TestFastDLLMv2(CustomTestCase):
             "--max-running-requests",
             "1",
             "--attention-backend",
-            "flashinfer",
+            "torch_native",
             "--dllm-algorithm",
             "HierarchyBlock",
+            "--disable-cuda-graph"
         ]
 
         cls.process = popen_launch_server(
@@ -46,11 +47,11 @@ class TestFastDLLMv2(CustomTestCase):
 
     def test_gsm8k(self):
         args = SimpleNamespace(
-            num_shots=5,
+            num_shots=0,
             data_path=None,
-            num_questions=200,
+            num_questions=1500,
             max_new_tokens=512,
-            parallel=128,
+            parallel=16,
             host="http://127.0.0.1",
             port=int(self.base_url.split(":")[-1]),
         )

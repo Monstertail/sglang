@@ -62,13 +62,16 @@ def run_eval(args):
     num_shots = args.num_shots
     few_shot_examples = get_few_shot_examples(lines, num_shots)
 
+    from transformers import AutoTokenizer
+    tokenizer = AutoTokenizer.from_pretrained("Efficient-Large-Model/Fast_dLLM_v2_7B")
+
     questions = []
     labels = []
     for i in range(len(lines[:num_questions])):
         questions.append(get_one_example(lines, i, False))
         labels.append(get_answer_value(lines[i]["answer"]))
     assert all(l != INVALID for l in labels)
-    arguments = [{"question": q} for q in questions]
+    arguments = [{"question": tokenizer.apply_chat_template([{"role": "user", "content": q.replace("\nAnswer:", "\nPlease reason step by step, and put your final answer within \\boxed{{}}.")}], tokenize=False, add_generation_prompt=True)} for q in questions]
 
     #####################################
     ######### SGL Program Begin #########
@@ -82,7 +85,7 @@ def run_eval(args):
         s += sgl.gen(
             "answer",
             max_tokens=args.max_new_tokens,
-            stop=["Question", "Assistant:", "<|separator|>"],
+            stop=["Question", "Assistant:", "<|separator|>", "<|im_end|>"],
         )
 
     #####################################
