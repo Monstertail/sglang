@@ -1,0 +1,25 @@
+diff --git a/python/sglang/test/run_eval.py b/python/sglang/test/run_eval.py
+index cf7d9a0f77..abf6b4c404 100644
+--- a/python/sglang/test/run_eval.py
++++ b/python/sglang/test/run_eval.py
+@@ -95,6 +95,7 @@ def run_eval_once(args, base_url: str, eval_obj: Eval) -> dict:
+     else:
+         sampler = ChatCompletionSampler(
+             **common_kwargs,
++            stop=getattr(args, "stop", None),
+             reasoning_effort=getattr(args, "reasoning_effort", None),
+             extra_body=extra_body if extra_body else None,
+             record_meta_info=True,
+@@ -469,6 +470,12 @@ if __name__ == "__main__":
+     parser.add_argument("--num-threads", type=int, default=512)
+     parser.add_argument("--max-tokens", type=int, default=None)
+     parser.add_argument("--temperature", type=float, default=None)
++    parser.add_argument(
++        "--stop",
++        nargs="*",
++        default=argparse.SUPPRESS,
++        help="Explicit stop strings for any API mode; omitted preserves API defaults.",
++    )
+     parser.add_argument("--top-p", type=float, default=None)
+     parser.add_argument(
+         "--top-k", type=int, default=None, help="Top-k sampling parameter"
