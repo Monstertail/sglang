@@ -6,6 +6,7 @@ import torch
 
 from sglang.srt.dllm.algorithm import get_algorithm
 from sglang.srt.dllm.config import DllmConfig
+from sglang.srt.dllm.result import DllmDeferredResult, DllmStepState
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.model_executor.model_runner import ModelRunner
@@ -66,6 +67,48 @@ class DllmAlgorithm:
             return self._run_fdfo(model_runner, forward_batch, algo_states)
         return self._run_sync(model_runner, forward_batch)
 
+    def prepare_step(
+        self, forward_batch: ForwardBatch, states: List[Any]
+    ) -> DllmStepState:
+        """Pack state before forward; only explicitly supported algorithms opt in."""
+        raise NotImplementedError("This dLLM algorithm has no deferred device step")
+
+    def step_device(
+        self,
+        forward_batch: ForwardBatch,
+        full_logits: torch.Tensor,
+        state: DllmStepState,
+    ) -> None:
+        """Enqueue one update without reading device scalars on the host."""
+        raise NotImplementedError("This dLLM algorithm has no deferred device step")
+
+    def run_deferred(
+        self,
+        model_runner: ModelRunner,
+        forward_batch: ForwardBatch,
+        algo_states: Optional[List[Any]] = None,
+    ) -> Tuple[Union[LogitsProcessorOutput, torch.Tensor], DllmDeferredResult, bool]:
+        """Enqueue a Stage-1 round without materializing its result on the host.
+
+        Preserve FDFO's one-forward/one-update boundary. The result owns its block
+        IDs because the input/graph buffers may be overwritten by a later round.
+        Stream ordering, D2H, and the completion event belong to the caller.
+        """
+        if not self.fdfo:
+            raise ValueError("Deferred dLLM execution requires FDFO")
+        states = self._init_fdfo_states(forward_batch, algo_states)
+        state = self.prepare_step(forward_batch, states)
+        out = model_runner.forward(forward_batch, pp_proxy_tensors=None)
+        self.step_device(forward_batch, out.logits_output.full_logits, state)
+        result = DllmDeferredResult(
+            block_ids=forward_batch.input_ids.view(
+                forward_batch.batch_size, self.block_size
+            ).clone(),
+            step_state=state,
+            extra_keep_alive_refs=(forward_batch,),
+        )
+        return out.logits_output, result, out.can_run_graph
+
     def _block_start_list(self, forward_batch: ForwardBatch) -> List[int]:
         batch_size = forward_batch.batch_size
         input_ids = forward_batch.input_ids.view(batch_size, self.block_size)
@@ -101,16 +144,17 @@ class DllmAlgorithm:
         ]
         return out.logits_output, next_token_ids_list, None, None, out.can_run_graph
 
-    def _run_fdfo(
+    def _init_fdfo_states(
         self,
-        model_runner: ModelRunner,
         forward_batch: ForwardBatch,
         algo_states: Optional[List[Any]],
-    ) -> DllmRunOutput:
+    ) -> List[Any]:
         batch_size = forward_batch.batch_size
 
         if algo_states is None:
             algo_states = [None] * batch_size
+        if len(algo_states) != batch_size:
+            raise ValueError("FDFO requires one carried state per request")
         fresh: Optional[List[Any]] = None
         states: List[Any] = []
         for i, carried in enumerate(algo_states):
@@ -120,6 +164,16 @@ class DllmAlgorithm:
                 states.append(fresh[i])
             else:
                 states.append(carried)
+        return states
+
+    def _run_fdfo(
+        self,
+        model_runner: ModelRunner,
+        forward_batch: ForwardBatch,
+        algo_states: Optional[List[Any]],
+    ) -> DllmRunOutput:
+        batch_size = forward_batch.batch_size
+        states = self._init_fdfo_states(forward_batch, algo_states)
 
         out = model_runner.forward(forward_batch, pp_proxy_tensors=None)
         done = self.step(forward_batch, out.logits_output.full_logits, states)

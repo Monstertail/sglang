@@ -1,4 +1,5 @@
-from typing import Any, List
+from dataclasses import dataclass
+from typing import Any, Callable, List, Tuple
 
 import numpy as np
 import torch
@@ -10,6 +11,32 @@ from sglang.srt.model_executor.forward_batch_info import ForwardBatch
 from sglang.srt.utils import is_npu
 
 _is_npu = is_npu()
+
+
+@dataclass
+class _JointThresholdStepState:
+    states: List[Any]
+    prompt_masks: torch.Tensor
+    finished: torch.Tensor
+    post_edit_steps: torch.Tensor
+
+    def map_device_tensors(self, copy_tensor: Callable[[torch.Tensor], torch.Tensor]):
+        self.finished = copy_tensor(self.finished)
+        self.post_edit_steps = copy_tensor(self.post_edit_steps)
+
+    def materialize(self) -> Tuple[List[bool], List[Any]]:
+        if (
+            self.finished.device.type != "cpu"
+            or self.post_edit_steps.device.type != "cpu"
+        ):
+            raise RuntimeError("JointThreshold state must be on CPU before commit")
+        done = self.finished.tolist()
+        post_edit_steps = self.post_edit_steps.tolist()
+        for i, state in enumerate(self.states):
+            state["finished"] = done[i]
+            state["post_edit_steps"] = post_edit_steps[i]
+        # Prompt masks remain on the device and retain their per-request identity.
+        return done, self.states
 
 
 def joint_threshold_update_step_vectorized(
@@ -205,27 +232,49 @@ class JointThreshold(DllmAlgorithm):
         full_logits: torch.Tensor,
         states: List[Any],
     ) -> List[bool]:
+        state = self.prepare_step(forward_batch, states)
+        self.step_device(forward_batch, full_logits, state)
+        # The existing serving path remains synchronous. Deferred callers do
+        # these copies on the result stream and materialize after copy_done.
+        state.map_device_tensors(lambda tensor: tensor.to("cpu"))
+        done, _ = state.materialize()
+        return done
+
+    def prepare_step(
+        self, forward_batch: ForwardBatch, states: List[Any]
+    ) -> _JointThresholdStepState:
+        if not self.fdfo or not self.vectorized_decoding:
+            raise ValueError("Deferred JointThreshold requires vectorized FDFO")
         # FDFO carries per-request dict states across rounds (stashed on the
         # request, re-mixed with fresh rows each round), so gather them into
         # batched tensors for this round's single step, then scatter the results
         # back onto the per-request dicts.
         device = forward_batch.input_ids.device
-        prompt_masks = torch.stack([state["prompt_mask"] for state in states])
-        finished = torch.tensor(
-            [state["finished"] for state in states], dtype=torch.bool, device=device
-        )
-        post_edit_steps = torch.tensor(
-            [state["post_edit_steps"] for state in states],
-            dtype=torch.int32,
-            device=device,
+        return _JointThresholdStepState(
+            states=states,
+            prompt_masks=torch.stack([state["prompt_mask"] for state in states]),
+            finished=torch.tensor(
+                [state["finished"] for state in states], dtype=torch.bool, device=device
+            ),
+            post_edit_steps=torch.tensor(
+                [state["post_edit_steps"] for state in states],
+                dtype=torch.int32,
+                device=device,
+            ),
         )
 
+    def step_device(
+        self,
+        forward_batch: ForwardBatch,
+        full_logits: torch.Tensor,
+        state: _JointThresholdStepState,
+    ) -> None:
         joint_threshold_update_step_vectorized(
             input_ids_1d=forward_batch.input_ids,
             full_logits_2d=full_logits,
-            prompt_masks=prompt_masks,
-            finished=finished,
-            post_edit_steps=post_edit_steps,
+            prompt_masks=state.prompt_masks,
+            finished=state.finished,
+            post_edit_steps=state.post_edit_steps,
             mask_id=self.mask_id,
             blk=self.block_size,
             threshold=self.threshold,
@@ -233,13 +282,6 @@ class JointThreshold(DllmAlgorithm):
             max_post_edit_steps=self.max_post_edit_steps,
             penalty_lambda=self.penalty_lambda,
         )
-
-        done = finished.tolist()
-        new_post_edit_steps = post_edit_steps.tolist()
-        for i, state in enumerate(states):
-            state["finished"] = done[i]
-            state["post_edit_steps"] = new_post_edit_steps[i]
-        return done
 
     def _step_per_row(
         self,

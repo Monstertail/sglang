@@ -5440,6 +5440,8 @@ class Scheduler(
 
 
 def dispatch_event_loop(scheduler: Scheduler):
+    if get_exec().dllm.dllm_async_scheduling:
+        return scheduler.event_loop_dllm_async()
     # The live PP property asserts before torch.distributed init (MLX stub).
     disaggregation_mode: DisaggregationMode = scheduler.disaggregation_mode
     if disaggregation_mode == DisaggregationMode.NULL:

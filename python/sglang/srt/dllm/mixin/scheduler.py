@@ -4,14 +4,23 @@ import logging
 from array import array
 from typing import TYPE_CHECKING, List, Optional, Set, Union
 
+from sglang.srt.disaggregation.utils import DisaggregationMode
 from sglang.srt.dllm.config import DllmConfig
 from sglang.srt.dllm.mixin.req import DllmReqPhase
+from sglang.srt.environ import envs
 from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
 from sglang.srt.managers.schedule_policy import AddReqResult, PrefillAdder
+from sglang.srt.managers.utils import _async_d2h
 from sglang.srt.mem_cache.common import release_kv_cache
 from sglang.srt.model_executor.forward_batch_info import ForwardMode
 from sglang.srt.observability.req_time_stats import set_time_batch
 from sglang.srt.runtime_context import get_exec, get_schedule
+from sglang.srt.utils import DynamicGradMode, is_cuda
+from sglang.srt.utils.nvtx_utils import (
+    NVTX_SCHEDULER_ENABLED,
+    profile_range,
+    scheduler_nvtx_method,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +29,104 @@ if TYPE_CHECKING:
 
 
 class SchedulerDllmMixin:
+    @DynamicGradMode()
+    def event_loop_dllm_async(self: Scheduler):
+        """One in-flight FDFO round; overlap only dependency-independent CPU work.
+
+        The ordinary run_batch path enqueues on the current schedule stream.
+        There is no AR future-token relay and no next-round KV mutation before
+        this round's result has been copied and committed.
+        """
+        config = self.dllm_config
+        if (
+            not is_cuda()
+            or config is None
+            or config.algorithm != "JointThreshold"
+            or not config.first_done_first_out_mode
+            or not config.algorithm_config.get("vectorized_decoding", False)
+            or self.ps.tp_size != 1
+            or self.ps.pp_size != 1
+            or self.ps.dp_size != 1
+            or self.enable_overlap
+            or self.enable_pdmux
+            or self.disaggregation_mode != DisaggregationMode.NULL
+            or not self.spec_algorithm.is_none()
+            or self.rust_server is not None
+            or self.enable_lora
+            or self.output_streamer.has_additional_customized_info
+        ):
+            raise ValueError(
+                "dLLM async scheduling currently requires CUDA TP1/PP1/DP1 "
+                "vectorized JointThreshold FDFO, without AR overlap, PD, "
+                "speculation, Rust egress, LoRA, or customized output hooks"
+            )
+        logger.info("dLLM async result handoff enabled (Stage 1; no lookahead)")
+        try:
+            while not self.gracefully_exit:
+                recv_reqs = self.request_receiver.recv_requests()
+                if recv_reqs:
+                    # Control requests may pause, abort, or shut down the engine.
+                    self._flush_dllm_stats()
+                self.process_input_requests(recv_reqs)
+                if self._engine_paused:
+                    self._flush_dllm_stats()
+                    continue
+
+                plan = self.get_next_batch_to_run(
+                    running_batch=self.running_batch, last_batch=self.last_batch
+                )
+                self.running_batch = plan.running_batch
+                batch = plan.batch_to_run
+                self.cur_batch_for_debug = batch
+                if batch:
+                    result = self.run_batch(batch)
+                    # process_batch_result_dllm queues D2H and publishes prior
+                    # stats while the current GPU work is in flight.
+                    self.process_batch_result(batch, result)
+                else:
+                    self._flush_dllm_stats()
+                    self._sched_idled = True
+                    self.on_idle()
+                self.last_batch = batch
+                if envs.SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_BUSY.get():
+                    self.invariant_checker.self_check_during_busy()
+        finally:
+            self._flush_dllm_stats()
+
+    @scheduler_nvtx_method("dllm.async.flush_deferred_stats")
+    def _flush_dllm_stats(self: Scheduler):
+        self.metrics_reporter.flush_deferred_stats()
+
+    def _materialize_dllm_result(self: Scheduler, result: GenerationBatchResult):
+        deferred = result.dllm_deferred_result
+        if deferred is not None:
+            assert result.copy_done is None
+            with profile_range(
+                "dllm.async.enqueue_d2h", nvtx_enabled=NVTX_SCHEDULER_ENABLED
+            ):
+                # run_batch used the current stream, not the AR forward stream.
+                self.copy_stream.wait_stream(self.device_module.current_stream())
+                result.copy_done = self.device_module.Event()
+                with self.copy_stream_ctx:
+                    deferred.map_device_tensors(_async_d2h)
+                    result.copy_done.record()
+        self._flush_dllm_stats()
+        if result.copy_done is not None:
+            with profile_range(
+                "dllm.async.wait_copy", nvtx_enabled=NVTX_SCHEDULER_ENABLED
+            ):
+                result.copy_done.synchronize()
+        if deferred is not None:
+            with profile_range(
+                "dllm.async.materialize", nvtx_enabled=NVTX_SCHEDULER_ENABLED
+            ):
+                (
+                    result.next_token_ids,
+                    result.accept_length_per_req_cpu,
+                    result.dllm_algo_state,
+                ) = deferred.materialize(result.copy_done)
+                result.dllm_deferred_result = None
+
     def init_diffusion_llm(self: Scheduler):
         self.dllm_config = (
             DllmConfig.from_server_args(self.server_args)
@@ -71,7 +178,10 @@ class SchedulerDllmMixin:
         batch: ScheduleBatch,
         result: GenerationBatchResult,
     ):
-        if result.copy_done is not None:
+        async_scheduling = get_exec().dllm.dllm_async_scheduling
+        if async_scheduling:
+            self._materialize_dllm_result(result)
+        elif result.copy_done is not None:
             result.copy_done.synchronize()
 
         fdfo_mode = self.dllm_config.first_done_first_out_mode
@@ -150,11 +260,14 @@ class SchedulerDllmMixin:
             self.output_streamer.stream_output(batch.reqs, batch.return_logprob)
             self.token_to_kv_pool_allocator.free_group_end()
 
+        # Publication has no next-round consumer: record it here and replay it
+        # from _flush_dllm_stats, after the next round is launched.
         self.metrics_reporter.report_prefill_stats(
             batch=batch,
             prefill_stats=batch.prefill_stats,
             can_run_cuda_graph=result.can_run_cuda_graph,
             dp_cooperation_info=batch.dp_cooperation_info,
+            defer=async_scheduling,
         )
 
     def _fetch_waiting_reqs(self: Scheduler):

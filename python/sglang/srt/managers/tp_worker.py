@@ -68,6 +68,7 @@ from sglang.srt.utils.hf_transformers_utils import (
     get_tokenizer,
     get_tokenizer_from_processor,
 )
+from sglang.srt.utils.nvtx_utils import NVTX_SCHEDULER_ENABLED, profile_range
 from sglang.srt.utils.patch_torch import monkey_patch_torch_reductions
 from sglang.srt.weight_sync.tensor_bucket import FlattenedTensorBucket
 
@@ -570,9 +571,43 @@ class TpModelWorker(BaseTpWorker):
         forward_batch: ForwardBatch,
         batch: Optional[ScheduleBatch] = None,
     ) -> GenerationBatchResult:
+        pure_prefill = (
+            sum(req.extend_range.end <= len(req.origin_input_ids) for req in batch.reqs)
+            if batch is not None
+            else -1
+        )
+        with profile_range(
+            f"dllm.batch[bs={forward_batch.batch_size},pure_prefill={pure_prefill}]",
+            nvtx_enabled=NVTX_SCHEDULER_ENABLED,
+        ):
+            return self._run_dllm_algorithm(forward_batch, batch)
+
+    def _run_dllm_algorithm(
+        self,
+        forward_batch: ForwardBatch,
+        batch: Optional[ScheduleBatch] = None,
+    ) -> GenerationBatchResult:
         algo_states = None
         if self.dllm_algorithm.fdfo and batch is not None:
             algo_states = [req.dllm_algo_state for req in batch.reqs]
+
+        if (
+            get_exec().dllm.dllm_async_scheduling
+            and batch is not None
+            and not batch.return_logprob
+            and not batch.return_hidden_states
+        ):
+            logits_output, deferred, can_run_cuda_graph = (
+                self.dllm_algorithm.run_deferred(
+                    self.model_runner, forward_batch, algo_states
+                )
+            )
+            # Keep next_token_ids unset: a dLLM block is not an AR token relay.
+            return GenerationBatchResult(
+                logits_output=logits_output,
+                dllm_deferred_result=deferred,
+                can_run_cuda_graph=can_run_cuda_graph,
+            )
 
         (
             logits_output,

@@ -20,6 +20,7 @@ from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
 from sglang.srt.state_capturer.base import TopkCaptureOutput
 
 if TYPE_CHECKING:
+    from sglang.srt.dllm.result import DllmDeferredResult
     from sglang.srt.managers.scheduler import GenerationBatchResult
     from sglang.srt.sampling.sampling_observer import HostAuxiliaryOutput
     from sglang.srt.speculative.eagle_info import EagleDraftInput
@@ -55,6 +56,7 @@ class GenerationBatchResult:
     # FDFO dLLM batching: per-request accepted block length and carried algo state.
     accept_length_per_req_cpu: Optional[List[int]] = None
     dllm_algo_state: Optional[List[Any]] = None
+    dllm_deferred_result: Optional[DllmDeferredResult] = None
     can_run_cuda_graph: bool = False
 
     # PP skip output comm: True when output send/recv was skipped and

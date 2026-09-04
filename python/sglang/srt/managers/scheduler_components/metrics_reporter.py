@@ -71,6 +71,46 @@ class _CacheHitRateWindow:
         return self.hit_tokens / self.total_tokens if self.total_tokens > 0 else 0.0
 
 
+def _clone_scheduler_stats(stats: SchedulerStats) -> SchedulerStats:
+    """Detach a stats snapshot from the live scheduler-owned instance.
+
+    ``self.stats`` is rebuilt in place every report, so a deferred publication
+    must own its values. Walk the fields generically: a new field added upstream
+    is cloned by the same rule instead of silently aliasing.
+    """
+    clone = dataclasses.replace(stats)
+    for f in dataclasses.fields(clone):
+        value = getattr(clone, f.name)
+        if isinstance(value, QueueCount):
+            setattr(
+                clone,
+                f.name,
+                QueueCount(
+                    total=value.total,
+                    by_priority=(
+                        # {} must survive as {}: it zeroes the known-priority
+                        # gauges, while None skips the per-priority breakdown.
+                        dict(value.by_priority)
+                        if value.by_priority is not None
+                        else None
+                    ),
+                ),
+            )
+        elif isinstance(value, list):
+            setattr(clone, f.name, list(value))
+        elif isinstance(value, dict):
+            setattr(clone, f.name, dict(value))
+    return clone
+
+
+def _emit(sink: Optional[List[tuple]], fn, *args, **kwargs) -> None:
+    """Publish now, or record the bound call for a later replay."""
+    if sink is None:
+        fn(*args, **kwargs)
+    else:
+        sink.append((fn, args, kwargs))
+
+
 def _decode_total_seq_lens(batch: ScheduleBatch) -> int:
     """Sync-free sum of seq_lens for decode metrics."""
     if batch.seq_lens_cpu is not None:
@@ -168,6 +208,9 @@ class SchedulerMetricsReporter:
         self.last_input_throughput: float = 0.0
         self.step_time_dict = defaultdict(list)  # Dict[batch size -> step time]
         self.stats = SchedulerStats()
+        # At most one round of recorded stats publication; see report_prefill_stats
+        # (defer=True) and flush_deferred_stats.
+        self._pending_stats_calls: Optional[List[tuple]] = None
         self._graph_backend_label = {
             "cpu": "cpu graph",
             "npu": "npu graph",
@@ -584,12 +627,21 @@ class SchedulerMetricsReporter:
         prefill_stats: PrefillStats,
         can_run_cuda_graph: bool,
         dp_cooperation_info: Optional[DPCooperationInfo] = None,
+        defer: bool = False,
     ):
+        """Report one prefill batch. ``defer=True`` records the publication calls
+        with owned arguments instead of running them, for flush_deferred_stats."""
         if (
             not self.is_stats_logging_rank
             and not self.current_scheduler_metrics_enabled
         ):
             return
+        if defer and self._pending_stats_calls is not None:
+            raise RuntimeError(
+                "A deferred stats record was not flushed before the next report."
+            )
+
+        sink: Optional[List[tuple]] = [] if defer else None
 
         now = time.perf_counter()
         gap_latency = now - self.last_prefill_stats_tic
@@ -657,19 +709,30 @@ class SchedulerMetricsReporter:
             msg += f", fwd occupancy: {self.fwd_occupancy:.2f}%"
 
         if self.is_stats_logging_rank:
-            logger.info(msg)
+            _emit(sink, logger.info, msg)
         if self.current_scheduler_metrics_enabled:
-            self.metrics_collector.increment_prefill_cuda_graph_pass(
-                value=can_run_cuda_graph
+            _emit(
+                sink,
+                self.metrics_collector.increment_prefill_cuda_graph_pass,
+                value=can_run_cuda_graph,
             )
-            self.metrics_collector.increment_realtime_tokens(
+            _emit(
+                sink,
+                self.metrics_collector.increment_realtime_tokens,
                 prefill_compute_tokens=prefill_stats.log_input_tokens,
                 prefill_cache_tokens=prefill_stats.log_hit_tokens,
-                dp_cooperation_info=dp_cooperation_info,
+                # The batch owns this object and is reused across rounds.
+                dp_cooperation_info=(
+                    dataclasses.replace(dp_cooperation_info)
+                    if defer and dp_cooperation_info is not None
+                    else dp_cooperation_info
+                ),
             )
             if self.enable_mfu_metrics:
                 flops, read_bytes, write_bytes = self._estimate_prefill_perf(batch)
-                self.metrics_collector.increment_estimated_perf(
+                _emit(
+                    sink,
+                    self.metrics_collector.increment_estimated_perf,
                     num_flops_per_gpu=flops,
                     num_read_bytes_per_gpu=read_bytes,
                     num_write_bytes_per_gpu=write_bytes,
@@ -692,7 +755,9 @@ class SchedulerMetricsReporter:
                 total_tokens,
                 now,
             )
-            self.metrics_collector.increment_effective_prefill_tokens(
+            _emit(
+                sink,
+                self.metrics_collector.increment_effective_prefill_tokens,
                 input_tokens=effective_input_tokens,
                 device_hit_tokens=prefill_stats.log_device_hit_tokens,
                 host_hit_tokens=prefill_stats.log_host_hit_tokens,
@@ -749,9 +814,29 @@ class SchedulerMetricsReporter:
             self.stats.fwd_occupancy = self.fwd_occupancy
             self._update_lora_metrics()
             self._log_hicache_stats()
-            self.metrics_collector.log_stats(self.stats)
+            _emit(
+                sink,
+                self.metrics_collector.log_stats,
+                _clone_scheduler_stats(self.stats) if defer else self.stats,
+            )
+            # KV metrics read the live pools and the event drain timestamps a
+            # live queue, so both stay on the eager path.
             self.scheduler.kv_events_publisher.emit_kv_metrics()
         self.scheduler.kv_events_publisher.publish_kv_events()
+
+        if sink:
+            self._pending_stats_calls = sink
+
+    def flush_deferred_stats(self) -> None:
+        """Replay the recorded stats publication of the previous report, if any."""
+        pending = self._pending_stats_calls
+        if pending is None:
+            return
+        # Detach before replay: a failing collector must not re-publish on the
+        # next flush.
+        self._pending_stats_calls = None
+        for fn, args, kwargs in pending:
+            fn(*args, **kwargs)
 
     def report_decode_stats(
         self,

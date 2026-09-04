@@ -3171,6 +3171,11 @@ class ServerArgs:
         ),
         NS("exec.dllm"),
     ] = True
+    dllm_async_scheduling: A[
+        bool,
+        "Experimental dLLM asynchronous result handoff and deferred streaming output. Requires single-GPU CUDA FDFO with vectorized JointThreshold; this does not enable the AR overlap scheduler.",
+        NS("exec.dllm"),
+    ] = False
 
     # -------------------------------------------------------------------------
     # PD disaggregation
