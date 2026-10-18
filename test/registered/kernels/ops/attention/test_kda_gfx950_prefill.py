@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import patch
 
 import torch
+
 from sglang.srt.layers.attention.linear.kernels.kda_gfx950 import Gfx950KDAKernel
 from sglang.srt.layers.attention.linear.kernels.kda_triton import TritonKDAKernel
 from sglang.test.ci.ci_register import register_amd_ci

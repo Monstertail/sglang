@@ -2,8 +2,9 @@
 // Generated gfx950 KDA packed-prefill kernel.
 
 #include <hip/hip_runtime.h>
-#include <stdint.h>
+
 #include <stddef.h>
+#include <stdint.h>
 
 typedef unsigned int u32x4 __attribute__((ext_vector_type(4)));
 typedef unsigned int u32x2 __attribute__((ext_vector_type(2)));
@@ -28,18 +29,25 @@ DEVI uint32_t pk_bf16(float lo, float hi) {
   f[1] = hi;
   return __builtin_bit_cast(uint32_t, __builtin_convertvector(f, bf16x2_t));
 }
-DEVI uint32_t pk2(f32x2 f) { return __builtin_bit_cast(uint32_t, __builtin_convertvector(f, bf16x2_t)); }
+DEVI uint32_t pk2(f32x2 f) {
+  return __builtin_bit_cast(uint32_t, __builtin_convertvector(f, bf16x2_t));
+}
 #else
 DEVI uint32_t pk_bf16(float lo, float hi) {
   __bf16 a = (__bf16)lo;
   __bf16 b = (__bf16)hi;
-  return (uint32_t)__builtin_bit_cast(unsigned short, a) |
-         ((uint32_t)__builtin_bit_cast(unsigned short, b) << 16);
+  return (uint32_t)__builtin_bit_cast(unsigned short, a) | ((uint32_t)__builtin_bit_cast(unsigned short, b) << 16);
 }
-DEVI uint32_t pk2(f32x2 f) { return pk_bf16(f[0], f[1]); }
+DEVI uint32_t pk2(f32x2 f) {
+  return pk_bf16(f[0], f[1]);
+}
 #endif
-DEVI float bf_lo(uint32_t u) { return __uint_as_float(u << 16); }
-DEVI float bf_hi(uint32_t u) { return __uint_as_float(u & 0xffff0000u); }
+DEVI float bf_lo(uint32_t u) {
+  return __uint_as_float(u << 16);
+}
+DEVI float bf_hi(uint32_t u) {
+  return __uint_as_float(u & 0xffff0000u);
+}
 
 #define EXP2(x) __builtin_amdgcn_exp2f(x)
 #define RCP(x) __builtin_amdgcn_rcpf(x)
@@ -58,13 +66,14 @@ DEVI float bf_hi(uint32_t u) { return __uint_as_float(u & 0xffff0000u); }
 #define WAVE_U() __builtin_amdgcn_readfirstlane((int)threadIdx.x >> 6)
 // DPP lane permutation within 16-lane rows (all source lanes valid for the controls used here:
 // quad_perm 0x00-0xff, row_mirror 0x140, row_half_mirror 0x141)
-#define DPP_F(x, ctrl) \
-  __int_as_float(__builtin_amdgcn_update_dpp(0, __float_as_int(x), (ctrl), 0xF, 0xF, true))
+#define DPP_F(x, ctrl) __int_as_float(__builtin_amdgcn_update_dpp(0, __float_as_int(x), (ctrl), 0xF, 0xF, true))
 
 DEVI float lane_shfl(float x, int src_lane) {
   return __int_as_float(__builtin_amdgcn_ds_bpermute(src_lane << 2, __float_as_int(x)));
 }
-DEVI float SHFL_XOR16(float x, int m) { return lane_shfl(x, ((int)threadIdx.x & 63) ^ m); }
+DEVI float SHFL_XOR16(float x, int m) {
+  return lane_shfl(x, ((int)threadIdx.x & 63) ^ m);
+}
 DEVI float SHFL_UP64(float x, int d) {
   int lane = (int)threadIdx.x & 63;
   return lane_shfl(x, lane >= d ? lane - d : lane);
@@ -72,8 +81,8 @@ DEVI float SHFL_UP64(float x, int d) {
 
 // bf16 16x16x32 and fp32 16x16x4 MFMA through the clang builtins (compiler-managed hazards)
 DEVI f32x4 MFMA16(u32x4 a, u32x4 b, f32x4 c) {
-  return __builtin_amdgcn_mfma_f32_16x16x32_bf16(__builtin_bit_cast(bf16x8_t, a),
-                                                 __builtin_bit_cast(bf16x8_t, b), c, 0, 0, 0);
+  return __builtin_amdgcn_mfma_f32_16x16x32_bf16(
+      __builtin_bit_cast(bf16x8_t, a), __builtin_bit_cast(bf16x8_t, b), c, 0, 0, 0);
 }
 DEVI f32x4 MFMA4(float a, float b, f32x4 c) {
   return __builtin_amdgcn_mfma_f32_16x16x4f32(a, b, c, 0, 0, 0);
@@ -90,36 +99,59 @@ DEVI f32x4 MFMA4(float a, float b, f32x4 c) {
 #define SZ_TR (128 * TR_LD * 2)
 #define SZ_A16 (64 * TR_LD * 2)
 #define LOG2E_F 1.4426950408889634f
-DEVI int rm_idx(int row, int col) { return row * RM_LD + col; }
+DEVI int rm_idx(int row, int col) {
+  return row * RM_LD + col;
+}
 DEVI int tr_idx(int c, int j) {
   int h = j >> 2;
   int s = ((c >> 4) & 7) << 1;
   return c * TR_LD + ((h ^ s) << 2) + (j & 3);
 }
-DEVI int a16_idx(int i, int j) { return i * TR_LD + j; }
-DEVI u32x4 lds_ld16(const uint16_t* base, int idx) { return *(const u32x4*)(base + idx); }
-DEVI u32x2 lds_ld8(const uint16_t* base, int idx) { return *(const u32x2*)(base + idx); }
-DEVI void lds_st16(uint16_t* base, int idx, u32x4 v) { *(u32x4*)(base + idx) = v; }
-DEVI void lds_st8(uint16_t* base, int idx, u32x2 v) { *(u32x2*)(base + idx) = v; }
+DEVI int a16_idx(int i, int j) {
+  return i * TR_LD + j;
+}
+DEVI u32x4 lds_ld16(const uint16_t* base, int idx) {
+  return *(const u32x4*)(base + idx);
+}
+DEVI u32x2 lds_ld8(const uint16_t* base, int idx) {
+  return *(const u32x2*)(base + idx);
+}
+DEVI void lds_st16(uint16_t* base, int idx, u32x4 v) {
+  *(u32x4*)(base + idx) = v;
+}
+DEVI void lds_st8(uint16_t* base, int idx, u32x2 v) {
+  *(u32x2*)(base + idx) = v;
+}
 DEVI u32x4 pack8(const float* f) {
   u32x4 r;
-  r[0] = pk_bf16(f[0], f[1]); r[1] = pk_bf16(f[2], f[3]);
-  r[2] = pk_bf16(f[4], f[5]); r[3] = pk_bf16(f[6], f[7]);
+  r[0] = pk_bf16(f[0], f[1]);
+  r[1] = pk_bf16(f[2], f[3]);
+  r[2] = pk_bf16(f[4], f[5]);
+  r[3] = pk_bf16(f[6], f[7]);
   return r;
 }
 DEVI u32x2 pack4(float a, float b, float c, float d) {
   u32x2 r;
-  r[0] = pk_bf16(a, b); r[1] = pk_bf16(c, d);
+  r[0] = pk_bf16(a, b);
+  r[1] = pk_bf16(c, d);
   return r;
 }
 DEVI void unpack8(u32x4 v, float* f) {
-  f[0] = bf_lo(v[0]); f[1] = bf_hi(v[0]); f[2] = bf_lo(v[1]); f[3] = bf_hi(v[1]);
-  f[4] = bf_lo(v[2]); f[5] = bf_hi(v[2]); f[6] = bf_lo(v[3]); f[7] = bf_hi(v[3]);
+  f[0] = bf_lo(v[0]);
+  f[1] = bf_hi(v[0]);
+  f[2] = bf_lo(v[1]);
+  f[3] = bf_hi(v[1]);
+  f[4] = bf_lo(v[2]);
+  f[5] = bf_hi(v[2]);
+  f[6] = bf_lo(v[3]);
+  f[7] = bf_hi(v[3]);
 }
 DEVI u32x4 acc_pair_to_bf16(f32x4 lo, f32x4 hi) {
   u32x4 r;
-  r[0] = pk_bf16(lo[0], lo[1]); r[1] = pk_bf16(lo[2], lo[3]);
-  r[2] = pk_bf16(hi[0], hi[1]); r[3] = pk_bf16(hi[2], hi[3]);
+  r[0] = pk_bf16(lo[0], lo[1]);
+  r[1] = pk_bf16(lo[2], lo[3]);
+  r[2] = pk_bf16(hi[0], hi[1]);
+  r[3] = pk_bf16(hi[2], hi[3]);
   return r;
 }
 DEVI f32x4 zero4() {
@@ -133,10 +165,18 @@ DEVI f32x2 mk2(float a, float b) {
   r[1] = b;
   return r;
 }
-DEVI f32x2 sp2(float a) { return mk2(a, a); }
-DEVI f32x2 bf2(uint32_t u) { return mk2(bf_lo(u), bf_hi(u)); }
-DEVI f32x2 exp2v(f32x2 v) { return mk2(EXP2(v[0]), EXP2(v[1])); }
-DEVI f32x2 rcpv(f32x2 v) { return mk2(RCP(v[0]), RCP(v[1])); }
+DEVI f32x2 sp2(float a) {
+  return mk2(a, a);
+}
+DEVI f32x2 bf2(uint32_t u) {
+  return mk2(bf_lo(u), bf_hi(u));
+}
+DEVI f32x2 exp2v(f32x2 v) {
+  return mk2(EXP2(v[0]), EXP2(v[1]));
+}
+DEVI f32x2 rcpv(f32x2 v) {
+  return mk2(RCP(v[0]), RCP(v[1]));
+}
 DEVI float row_sum16(float x) {
   x += DPP_F(x, 0xB1);
   x += DPP_F(x, 0x4E);
@@ -144,11 +184,16 @@ DEVI float row_sum16(float x) {
   x += DPP_F(x, 0x140);
   return x;
 }
-DEVI void gst16(char* p, u32x4 v) { *(u32x4*)p = v; }
-DEVI void gst8(char* p, u32x2 v) { *(u32x2*)p = v; }
+DEVI void gst16(char* p, u32x4 v) {
+  *(u32x4*)p = v;
+}
+DEVI void gst8(char* p, u32x2 v) {
+  *(u32x2*)p = v;
+}
 #ifndef HAVE_MFMA_CHAIN
 DEVI void MFMA_C(f32x4& c, const u32x4* a, const u32x4* b, int n) {
-  for (int s = 0; s < n; ++s) c = MFMA16(a[s], b[s], c);
+  for (int s = 0; s < n; ++s)
+    c = MFMA16(a[s], b[s], c);
 }
 DEVI void MFMA_SA(f32x4& c0, f32x4& c1, const u32x4* a, const u32x4* b0, const u32x4* b1, int n) {
   for (int s = 0; s < n; ++s) {
@@ -163,7 +208,8 @@ DEVI void MFMA_SB(f32x4& c0, f32x4& c1, const u32x4* a0, const u32x4* a1, const 
   }
 }
 DEVI void MFMA4_C4(f32x4& c, f32x4 a, f32x4 b) {
-  for (int s = 0; s < 4; ++s) c = MFMA4(a[s], b[s], c);
+  for (int s = 0; s < 4; ++s)
+    c = MFMA4(a[s], b[s], c);
 }
 #endif
 #define GB_W 0
@@ -190,16 +236,24 @@ DEVI void MFMA4_C4(f32x4& c, f32x4 a, f32x4 b) {
 #define SMEM_A (LA_FACD + 2048)
 static_assert(LA_YEND <= 3 * SZ_RX, "phase-Y arrays must fit in the dead tile bytes");
 static_assert(SMEM_A <= 42 * 1280, "kernel A must fit three workgroups per CU");
-DEVI int rx_idx(int row, int col) { return row * 128 + ((((col >> 3) ^ row) & 15) << 3) + (col & 7); }
+DEVI int rx_idx(int row, int col) {
+  return row * 128 + ((((col >> 3) ^ row) & 15) << 3) + (col & 7);
+}
 #ifndef XCD_PAIR
 #define XCD_PAIR 1
 #endif
 #define LB_VT GB_SH
 #define SMEM_B1 (2 * (GB_SH + 128 * TR_LD * 2))
 #define SMEM_B2 (2 * (GB_SH + 64 * TR_LD * 2))
-DEVI int akk_idx(int I, int J, int ii, int jj) { return ((I * (I + 1) / 2 + J) * 16 + ii) * 20 + jj; }
-DEVI int tfd_idx(int I, int ii, int jj) { return I * 336 + ii * 20 + jj; }
-DEVI int fa_idx(int mt, int ks) { return mt < 2 ? mt : 2 + 2 * (mt - 2) + ks; }
+DEVI int akk_idx(int I, int J, int ii, int jj) {
+  return ((I * (I + 1) / 2 + J) * 16 + ii) * 20 + jj;
+}
+DEVI int tfd_idx(int I, int ii, int jj) {
+  return I * 336 + ii * 20 + jj;
+}
+DEVI int fa_idx(int mt, int ks) {
+  return mt < 2 ? mt : 2 + 2 * (mt - 2) + ks;
+}
 struct IntraItem {
   long t0;
   int L, h, cs, valid;
@@ -207,11 +261,10 @@ struct IntraItem {
 struct IntraRaw {
   u32x4 q[4], k[4], g[4];
   uint32_t b[4];
-  float alog;
+  float a_log;
   f32x4 dt0, dt1;
 };
-DEVI IntraItem intra_decode(int item, const long long* __restrict__ cu, int T, int H, int N,
-                            int has_cu) {
+DEVI IntraItem intra_decode(int item, const long long* __restrict__ cu, int T, int H, int N, int has_cu) {
   IntraItem it;
   it.cs = item / H;
   it.h = item - it.cs * H;
@@ -243,10 +296,19 @@ DEVI IntraItem intra_decode(int item, const long long* __restrict__ cu, int T, i
   it.valid = 1;
   return it;
 }
-DEVI void intra_load_qkg(IntraRaw& r, const IntraItem& it, const uint16_t* __restrict__ q,
-                         const uint16_t* __restrict__ k, const uint16_t* __restrict__ g,
-                         const uint16_t* __restrict__ beta, const float* __restrict__ A_log,
-                         const float* __restrict__ dt_bias, int H, int w, int lg, int lr) {
+DEVI void intra_load_qkg(
+    IntraRaw& r,
+    const IntraItem& it,
+    const uint16_t* __restrict__ q,
+    const uint16_t* __restrict__ k,
+    const uint16_t* __restrict__ g,
+    const uint16_t* __restrict__ beta,
+    const float* __restrict__ A_log,
+    const float* __restrict__ dt_bias,
+    int H,
+    int w,
+    int lg,
+    int lr) {
   const int h = it.h;
 #pragma unroll
   for (int i = 0; i < 4; ++i) {
@@ -257,7 +319,7 @@ DEVI void intra_load_qkg(IntraRaw& r, const IntraItem& it, const uint16_t* __res
     r.k[i] = *(const u32x4*)(k + off);
     r.g[i] = *(const u32x4*)(g + off);
   }
-  r.alog = A_log[h];
+  r.a_log = A_log[h];
   r.dt0 = *(const f32x4*)(dt_bias + h * KD + 8 * lr);
   r.dt1 = *(const f32x4*)(dt_bias + h * KD + 8 * lr + 4);
 #pragma unroll
@@ -270,7 +332,8 @@ DEVI void intra_load_qkg(IntraRaw& r, const IntraItem& it, const uint16_t* __res
 DEVI int intra_nreal(const long long* __restrict__ cu, int T, int H, int N, int has_cu) {
   long tot = 0;
   if (has_cu) {
-    for (int m = 0; m < N; ++m) tot += ((long)cu[m + 1] - (long)cu[m] + KC - 1) / KC;
+    for (int m = 0; m < N; ++m)
+      tot += ((long)cu[m + 1] - (long)cu[m] + KC - 1) / KC;
   } else {
     tot = ((long)T + KC - 1) / KC;
   }
@@ -278,7 +341,8 @@ DEVI int intra_nreal(const long long* __restrict__ cu, int T, int H, int N, int 
 }
 DEVI void p3_col(u32x4* col, const uint16_t* KE, int J, int lg, int lr) {
 #pragma unroll
-  for (int ks = 0; ks < 4; ++ks) col[ks] = lds_ld16(KE, rx_idx(16 * J + lr, 32 * ks + 8 * lg));
+  for (int ks = 0; ks < 4; ++ks)
+    col[ks] = lds_ld16(KE, rx_idx(16 * J + lr, 32 * ks + 8 * lg));
 }
 DEVI void p3_scale(u32x4* dst, const u32x4* src, const float* fac, int lg) {
 #pragma unroll
@@ -313,8 +377,18 @@ DEVI void p3_scale_tau(u32x4* dst, const u32x4* src, const float* ta, const floa
     dst[ks] = r;
   }
 }
-DEVI f32x4 p3_pair(const u32x4* col, int I, int J, bool diag, const uint16_t* QR, const uint16_t* KR,
-                   const float* BETA, char* gb, float scale, int lg, int lr) {
+DEVI f32x4 p3_pair(
+    const u32x4* col,
+    int I,
+    int J,
+    bool diag,
+    const uint16_t* QR,
+    const uint16_t* KR,
+    const float* BETA,
+    char* gb,
+    float scale,
+    int lg,
+    int lr) {
   f32x4 accq = zero4(), acck = zero4();
   u32x4 bq[4], bk[4];
 #pragma unroll
@@ -336,10 +410,14 @@ DEVI f32x4 p3_pair(const u32x4* col, int I, int J, bool diag, const uint16_t* QR
       ak[jj] = (4 * lg + jj < lr) ? ak[jj] : 0.f;
     }
   }
-  gst8(gb + GB_A + (size_t)(fa_idx(I, J >> 1) * 64 + lg * 16 + lr) * 16 + (J & 1) * 8,
-       pack4(aq[0], aq[1], aq[2], aq[3]));
+  gst8(
+      gb + GB_A + (size_t)(fa_idx(I, J >> 1) * 64 + lg * 16 + lr) * 16 + (J & 1) * 8,
+      pack4(aq[0], aq[1], aq[2], aq[3]));
   f32x4 akv;
-  akv[0] = ak[0]; akv[1] = ak[1]; akv[2] = ak[2]; akv[3] = ak[3];
+  akv[0] = ak[0];
+  akv[1] = ak[1];
+  akv[2] = ak[2];
+  akv[3] = ak[3];
   return akv;
 }
 DEVI void st_akk(float* AKK, int I, int J, f32x4 akv, int lg, int lr) {
@@ -352,17 +430,18 @@ template <int J>
 DEVI void p5_col(const float* AKK, const float* TFD, uint16_t* T16, int lg, int lr) {
   f32x4 Tc[4];
 #pragma unroll
-  for (int e = 0; e < 4; ++e) Tc[J][e] = TFD[tfd_idx(J, 4 * lg + e, lr)];
+  for (int e = 0; e < 4; ++e)
+    Tc[J][e] = TFD[tfd_idx(J, 4 * lg + e, lr)];
 #pragma unroll
   for (int I = J + 1; I < 4; ++I) {
     f32x4 X = zero4();
 #if KDA_P5_BF16
 #pragma unroll
     for (int K0 = J; K0 < I; K0 += 2) {
-      const f32x4 alo = *(const f32x4*)(AKK + akk_idx(I, K0, lr, 4 * lg));
-      const f32x4 ahi = (K0 + 1 < I) ? *(const f32x4*)(AKK + akk_idx(I, K0 + 1, lr, 4 * lg)) : zero4();
-      const f32x4 bhi = (K0 + 1 < I) ? Tc[K0 + 1] : zero4();
-      X = MFMA16(acc_pair_to_bf16(alo, ahi), acc_pair_to_bf16(Tc[K0], bhi), X);
+      const f32x4 a_lo = *(const f32x4*)(AKK + akk_idx(I, K0, lr, 4 * lg));
+      const f32x4 a_hi = (K0 + 1 < I) ? *(const f32x4*)(AKK + akk_idx(I, K0 + 1, lr, 4 * lg)) : zero4();
+      const f32x4 b_hi = (K0 + 1 < I) ? Tc[K0 + 1] : zero4();
+      X = MFMA16(acc_pair_to_bf16(a_lo, a_hi), acc_pair_to_bf16(Tc[K0], b_hi), X);
     }
     const f32x4 td = *(const f32x4*)(TFD + tfd_idx(I, lr, 4 * lg));
     const f32x4 Y = MFMA16(acc_pair_to_bf16(td, zero4()), acc_pair_to_bf16(X, zero4()), zero4());
@@ -384,8 +463,8 @@ DEVI void p5_col(const float* AKK, const float* TFD, uint16_t* T16, int lg, int 
     Tc[I] = nt;
   }
 }
-DEVI void intra_process(char* smem, const IntraItem& cit, const IntraRaw& cur, char* __restrict__ gbuf,
-                        int H, float scale) {
+DEVI void
+intra_process(char* smem, const IntraItem& cit, const IntraRaw& cur, char* __restrict__ gbuf, int H, float scale) {
   uint16_t* L16 = (uint16_t*)smem;
   float* LF = (float*)smem;
   const int tid = TID;
@@ -406,7 +485,7 @@ DEVI void intra_process(char* smem, const IntraItem& cit, const IntraRaw& cur, c
   const int L = cit.L;
   const int h = cit.h;
   char* const gb = gbuf + ((size_t)cit.cs * H + h) * GB_BYTES;
-  const float a_h = EXP2(cur.alog * LOG2E_F);
+  const float a_h = EXP2(cur.a_log * LOG2E_F);
   const float a2 = -a_h * LOG2E_F;
   const float k1 = 1.0f / (-5.0f * LOG2E_F);
   f32x2 b2v[4];
@@ -438,7 +517,8 @@ DEVI void intra_process(char* smem, const IntraItem& cit, const IntraRaw& cur, c
     for (int i = 0; i < 4; ++i) {
       const bool ok = 16 * wu + 4 * lg + i < L;
 #pragma unroll
-      for (int p = 0; p < 4; ++p) lam2[i][p] = ok ? lam2[i][p] : sp2(0.f);
+      for (int p = 0; p < 4; ++p)
+        lam2[i][p] = ok ? lam2[i][p] : sp2(0.f);
       bsig[i] = ok ? bsig[i] : 0.f;
     }
   }
@@ -450,7 +530,8 @@ DEVI void intra_process(char* smem, const IntraItem& cit, const IntraRaw& cur, c
 #pragma unroll
   for (int i = 1; i < 4; ++i)
 #pragma unroll
-    for (int p = 0; p < 4; ++p) lam2[i][p] += lam2[i - 1][p];
+    for (int p = 0; p < 4; ++p)
+      lam2[i][p] += lam2[i - 1][p];
   {
     const float m1 = (lg >= 1) ? 1.f : 0.f, m2 = (lg >= 2) ? 1.f : 0.f;
     f32x2 totw[4];
@@ -461,22 +542,33 @@ DEVI void intra_process(char* smem, const IntraItem& cit, const IntraRaw& cur, c
       inc = mk2(SHFL_UP64(inc[0], 32), SHFL_UP64(inc[1], 32)) * sp2(m2) + inc;
       const f32x2 excl = inc - tot;
 #pragma unroll
-      for (int i = 0; i < 4; ++i) lam2[i][p] += excl;
+      for (int i = 0; i < 4; ++i)
+        lam2[i][p] += excl;
       totw[p] = inc;
     }
     if (lg == 3) {
       f32x4 t0v, t1v;
-      t0v[0] = totw[0][0]; t0v[1] = totw[0][1]; t0v[2] = totw[1][0]; t0v[3] = totw[1][1];
-      t1v[0] = totw[2][0]; t1v[1] = totw[2][1]; t1v[2] = totw[3][0]; t1v[3] = totw[3][1];
+      t0v[0] = totw[0][0];
+      t0v[1] = totw[0][1];
+      t0v[2] = totw[1][0];
+      t0v[3] = totw[1][1];
+      t1v[0] = totw[2][0];
+      t1v[1] = totw[2][1];
+      t1v[2] = totw[3][0];
+      t1v[3] = totw[3][1];
       *(f32x4*)(TAU + wu * KD + 8 * lr) = t0v;
       *(f32x4*)(TAU + wu * KD + 8 * lr + 4) = t1v;
     }
   }
   if (lr == 0) {
 #pragma unroll
-    for (int i = 0; i < 4; ++i) BETA[16 * wu + 4 * lg + i] = bsig[i];
+    for (int i = 0; i < 4; ++i)
+      BETA[16 * wu + 4 * lg + i] = bsig[i];
     f32x4 bv;
-    bv[0] = bsig[0]; bv[1] = bsig[1]; bv[2] = bsig[2]; bv[3] = bsig[3];
+    bv[0] = bsig[0];
+    bv[1] = bsig[1];
+    bv[2] = bsig[2];
+    bv[3] = bsig[3];
     *(f32x4*)(gb + GB_B + (16 * wu + 4 * lg) * 4) = bv;
   }
   SYNC();
@@ -545,8 +637,10 @@ DEVI void intra_process(char* smem, const IntraItem& cit, const IntraRaw& cur, c
       const int n = 4 * lg + i;
       char* qb = gb + GB_Q + (size_t)((wu * 4 + ksq) * 64) * 16 + h1 * 8;
       u32x2 lo, hi;
-      lo[0] = qgp[0]; lo[1] = qgp[1];
-      hi[0] = qgp[2]; hi[1] = qgp[3];
+      lo[0] = qgp[0];
+      lo[1] = qgp[1];
+      hi[0] = qgp[2];
+      hi[1] = qgp[3];
       gst8(qb + (n + 16 * ga) * 16, lo);
       gst8(qb + (n + 16 * (ga + 1)) * 16, hi);
     }
@@ -606,7 +700,8 @@ DEVI void intra_process(char* smem, const IntraItem& cit, const IntraRaw& cur, c
     }
     if (wu >= 2) {
       u32x2 z;
-      z[0] = 0u; z[1] = 0u;
+      z[0] = 0u;
+      z[1] = 0u;
       gst8(gb + GB_A + (size_t)(fa_idx(wu == 2 ? 0 : 2, wu == 2 ? 0 : 1) * 64 + lane) * 16 + 8, z);
     }
   }
@@ -628,7 +723,8 @@ DEVI void intra_process(char* smem, const IntraItem& cit, const IntraRaw& cur, c
 #pragma unroll
     for (int p = 0; p < 4; ++p)
 #pragma unroll
-      for (int e = 0; e < 2; ++e) lds_st8(KGT, tr_idx(8 * lr + 2 * p + e, jrow), kgt[p][e]);
+      for (int e = 0; e < 2; ++e)
+        lds_st8(KGT, tr_idx(8 * lr + 2 * p + e, jrow), kgt[p][e]);
     {
       int blk = tid >> 7, rr = (tid >> 3) & 15, cc = (tid & 7) * 2;
       int I = blk ? 2 : 0;
@@ -644,7 +740,8 @@ DEVI void intra_process(char* smem, const IntraItem& cit, const IntraRaw& cur, c
       for (int ii = 0; ii < 16; ++ii) {
         f32x2 acc = sp2(0.f);
 #pragma unroll
-        for (int kk = 0; kk < (ii >> 1); ++kk) acc += *(const f32x2*)(Ab + ii * 20 + 2 * kk) * t2[kk];
+        for (int kk = 0; kk < (ii >> 1); ++kk)
+          acc += *(const f32x2*)(Ab + ii * 20 + 2 * kk) * t2[kk];
         float s = acc[0] + acc[1];
         if (ii & 1) s += Ab[ii * 20 + ii - 1] * t2[ii >> 1][0];
         t2[ii >> 1][ii & 1] = ((ii == j) ? 1.f : 0.f) - s;
@@ -660,9 +757,12 @@ DEVI void intra_process(char* smem, const IntraItem& cit, const IntraRaw& cur, c
     }
   }
   SYNC();
-  if (wu == 0) p5_col<0>(AKK, TFD, T16, lg, lr);
-  else if (wu == 1) p5_col<1>(AKK, TFD, T16, lg, lr);
-  else if (wu == 2) p5_col<2>(AKK, TFD, T16, lg, lr);
+  if (wu == 0)
+    p5_col<0>(AKK, TFD, T16, lg, lr);
+  else if (wu == 1)
+    p5_col<1>(AKK, TFD, T16, lg, lr);
+  else if (wu == 2)
+    p5_col<2>(AKK, TFD, T16, lg, lr);
   SYNC();
   {
 #pragma unroll
@@ -680,24 +780,35 @@ DEVI void intra_process(char* smem, const IntraItem& cit, const IntraRaw& cur, c
       acc[1] = zero4();
       MFMA_SB(acc[0], acc[1], a0, a1, b, nks);
       u32x4 fr;
-      fr[0] = pk_bf16(-acc[0][0], -acc[0][1]); fr[1] = pk_bf16(-acc[0][2], -acc[0][3]);
-      fr[2] = pk_bf16(-acc[1][0], -acc[1][1]); fr[3] = pk_bf16(-acc[1][2], -acc[1][3]);
+      fr[0] = pk_bf16(-acc[0][0], -acc[0][1]);
+      fr[1] = pk_bf16(-acc[0][2], -acc[0][3]);
+      fr[2] = pk_bf16(-acc[1][0], -acc[1][1]);
+      fr[3] = pk_bf16(-acc[1][2], -acc[1][3]);
       gst16(gb + GB_W + (size_t)((nt * 4 + wu) * 64 + lane) * 16, fr);
     }
     for (int f = wu; f < 6; f += 4) {
       const int mt = f < 2 ? f : 2 + ((f - 2) >> 1);
       const int ks = f < 2 ? 0 : ((f - 2) & 1);
-      gst16(gb + GB_T + (size_t)(f * 64 + lane) * 16,
-            lds_ld16(T16, a16_idx(16 * mt + lr, 32 * ks + 8 * lg)));
+      gst16(gb + GB_T + (size_t)(f * 64 + lane) * 16, lds_ld16(T16, a16_idx(16 * mt + lr, 32 * ks + 8 * lg)));
     }
   }
 }
-DEVI void kda_intra_body_np(char* smem,
-                            const uint16_t* __restrict__ q, const uint16_t* __restrict__ k,
-                            const uint16_t* __restrict__ g, const uint16_t* __restrict__ beta,
-                            const float* __restrict__ A_log, const float* __restrict__ dt_bias,
-                            const long long* __restrict__ cu, char* __restrict__ gbuf, int T, int H,
-                            int N, float scale, int has_cu, int nwork) {
+DEVI void kda_intra_body_np(
+    char* smem,
+    const uint16_t* __restrict__ q,
+    const uint16_t* __restrict__ k,
+    const uint16_t* __restrict__ g,
+    const uint16_t* __restrict__ beta,
+    const float* __restrict__ A_log,
+    const float* __restrict__ dt_bias,
+    const long long* __restrict__ cu,
+    char* __restrict__ gbuf,
+    int T,
+    int H,
+    int N,
+    float scale,
+    int has_cu,
+    int nwork) {
   const int tid = TID;
   const int w = tid >> 6;
   const int lane = tid & 63;
@@ -734,8 +845,17 @@ DEVI void recur_fetch_units(u32x4* P, const char* __restrict__ nb, int tid) {
   }
 }
 template <int VS>
-DEVI void recur_fetch_vb(u32x4* VP, u32x2& BP, const char* __restrict__ nb,
-                         const uint16_t* __restrict__ v, long t0, int L, int H, int h, int hf, int tid) {
+DEVI void recur_fetch_vb(
+    u32x4* VP,
+    u32x2& BP,
+    const char* __restrict__ nb,
+    const uint16_t* __restrict__ v,
+    long t0,
+    int L,
+    int H,
+    int h,
+    int hf,
+    int tid) {
   constexpr int NCG = RecurPF<VS>::NCG;
   const int cg = tid % NCG;
   const int r0 = 2 * (tid / NCG);
@@ -747,8 +867,18 @@ DEVI void recur_fetch_vb(u32x4* VP, u32x2& BP, const char* __restrict__ nb,
   BP = *(const u32x2*)(nb + GB_B + r0 * 4);
 }
 template <int VS>
-DEVI void recur_fetch(u32x4* P, u32x4* VP, u32x2& BP, const char* __restrict__ nb,
-                      const uint16_t* __restrict__ v, long t0, int L, int H, int h, int hf, int tid) {
+DEVI void recur_fetch(
+    u32x4* P,
+    u32x4* VP,
+    u32x2& BP,
+    const char* __restrict__ nb,
+    const uint16_t* __restrict__ v,
+    long t0,
+    int L,
+    int H,
+    int h,
+    int hf,
+    int tid) {
   recur_fetch_units<VS, 0, RecurPF<VS>::NL>(P, nb, tid);
   recur_fetch_vb<VS>(VP, BP, nb, v, t0, L, H, h, hf, tid);
 }
@@ -789,14 +919,28 @@ DEVI void recur_stage(char* LB, const u32x4* P, const u32x4* VP, u32x2 BP, int t
 #ifndef KDA_PIPE
 #define KDA_PIPE 1
 #endif
-DEVI void recur_chunk(f32x4* S, const char* LB, uint16_t* __restrict__ o, char* __restrict__ trash,
-                      long t0, int L, int H, int h, int sw, int wl, int lane, int lg, int lr) {
+DEVI void recur_chunk(
+    f32x4* S,
+    const char* LB,
+    uint16_t* __restrict__ o,
+    char* __restrict__ trash,
+    long t0,
+    int L,
+    int H,
+    int h,
+    int sw,
+    int wl,
+    int lane,
+    int lg,
+    int lr) {
   f32x4 gv[8];
 #pragma unroll
-  for (int mt = 0; mt < 8; ++mt) gv[mt] = *(const f32x4*)(LB + GB_G + (16 * mt + 4 * lg) * 4);
+  for (int mt = 0; mt < 8; ++mt)
+    gv[mt] = *(const f32x4*)(LB + GB_G + (16 * mt + 4 * lg) * 4);
   f32x4 U[4];
 #pragma unroll
-  for (int mt = 0; mt < 4; ++mt) U[mt] = zero4();
+  for (int mt = 0; mt < 4; ++mt)
+    U[mt] = zero4();
   {
     const uint16_t* VT = (const uint16_t*)(LB + LB_VT);
     const int cl = 16 * wl + lr;
@@ -815,10 +959,14 @@ DEVI void recur_chunk(f32x4* S, const char* LB, uint16_t* __restrict__ o, char* 
   }
   u32x4 Sb[4];
 #pragma unroll
-  for (int ks = 0; ks < 4; ++ks) Sb[ks] = acc_pair_to_bf16(S[2 * ks], S[2 * ks + 1]);
+  for (int ks = 0; ks < 4; ++ks)
+    Sb[ks] = acc_pair_to_bf16(S[2 * ks], S[2 * ks + 1]);
 #pragma unroll
   for (int mt = 0; mt < 8; ++mt) {
-    S[mt][0] *= gv[mt][0]; S[mt][1] *= gv[mt][1]; S[mt][2] *= gv[mt][2]; S[mt][3] *= gv[mt][3];
+    S[mt][0] *= gv[mt][0];
+    S[mt][1] *= gv[mt][1];
+    S[mt][2] *= gv[mt][2];
+    S[mt][3] *= gv[mt][3];
   }
 #pragma unroll
   for (int mp = 0; mp < 4; mp += 2) {
@@ -830,9 +978,10 @@ DEVI void recur_chunk(f32x4* S, const char* LB, uint16_t* __restrict__ o, char* 
     }
     MFMA_SB(U[mp], U[mp + 1], a0, a1, Sb, 4);
   }
-  f32x4 Ot[4];
+  f32x4 o_acc[4];
 #pragma unroll
-  for (int mt = 0; mt < 4; ++mt) Ot[mt] = zero4();
+  for (int mt = 0; mt < 4; ++mt)
+    o_acc[mt] = zero4();
 #pragma unroll
   for (int mp = 0; mp < 4; mp += 2) {
     u32x4 b0[4], b1[4];
@@ -841,11 +990,12 @@ DEVI void recur_chunk(f32x4* S, const char* LB, uint16_t* __restrict__ o, char* 
       b0[ks] = *(const u32x4*)(LB + GB_Q + ((mp * 4 + ks) * 64 + lane) * 16);
       b1[ks] = *(const u32x4*)(LB + GB_Q + (((mp + 1) * 4 + ks) * 64 + lane) * 16);
     }
-    MFMA_SA(Ot[mp], Ot[mp + 1], Sb, b0, b1, 4);
+    MFMA_SA(o_acc[mp], o_acc[mp + 1], Sb, b0, b1, 4);
   }
   u32x4 Ub[2];
 #pragma unroll
-  for (int ks = 0; ks < 2; ++ks) Ub[ks] = acc_pair_to_bf16(U[2 * ks], U[2 * ks + 1]);
+  for (int ks = 0; ks < 2; ++ks)
+    Ub[ks] = acc_pair_to_bf16(U[2 * ks], U[2 * ks + 1]);
   {
     u32x4 q0[1], q1[1], q2[2], q3[2];
     q0[0] = *(const u32x4*)(LB + GB_A + (fa_idx(0, 0) * 64 + lane) * 16);
@@ -855,8 +1005,8 @@ DEVI void recur_chunk(f32x4* S, const char* LB, uint16_t* __restrict__ o, char* 
       q2[ks] = *(const u32x4*)(LB + GB_A + (fa_idx(2, ks) * 64 + lane) * 16);
       q3[ks] = *(const u32x4*)(LB + GB_A + (fa_idx(3, ks) * 64 + lane) * 16);
     }
-    MFMA_SA(Ot[0], Ot[1], Ub, q0, q1, 1);
-    MFMA_SA(Ot[2], Ot[3], Ub, q2, q3, 2);
+    MFMA_SA(o_acc[0], o_acc[1], Ub, q0, q1, 1);
+    MFMA_SA(o_acc[2], o_acc[3], Ub, q2, q3, 2);
   }
   char* const tr = trash + lane * 8;
 #pragma unroll
@@ -866,7 +1016,7 @@ DEVI void recur_chunk(f32x4* S, const char* LB, uint16_t* __restrict__ o, char* 
     const long row = ok ? t0 + i : t0;
     char* const real = (char*)(o + ((size_t)row * H + h) * KD + 16 * sw + 4 * lg);
     char* dst = ok ? real : tr;
-    *(u32x2*)dst = pack4(Ot[mt][0], Ot[mt][1], Ot[mt][2], Ot[mt][3]);
+    *(u32x2*)dst = pack4(o_acc[mt][0], o_acc[mt][1], o_acc[mt][2], o_acc[mt][3]);
   }
 #pragma unroll
   for (int mp = 0; mp < 8; mp += 2) {
@@ -888,9 +1038,15 @@ struct StageP1 {
   const u32x4* VP;
   u32x2 BP;
   int tid;
-  DEVM void half0() { recur_stage_units<VS, 0, RecurPF<VS>::NL / 2>(LBn, P, tid); }
-  DEVM void half1() { recur_stage_units<VS, RecurPF<VS>::NL / 2, RecurPF<VS>::NL>(LBn, P, tid); }
-  DEVM void vt() { recur_stage_vt<VS>(LBn, VP, BP, tid); }
+  DEVM void half0() {
+    recur_stage_units<VS, 0, RecurPF<VS>::NL / 2>(LBn, P, tid);
+  }
+  DEVM void half1() {
+    recur_stage_units<VS, RecurPF<VS>::NL / 2, RecurPF<VS>::NL>(LBn, P, tid);
+  }
+  DEVM void vt() {
+    recur_stage_vt<VS>(LBn, VP, BP, tid);
+  }
 };
 template <int VS>
 struct StageRoll {
@@ -929,12 +1085,26 @@ struct StageVT {
   int tid;
   DEVM void half0() {}
   DEVM void half1() {}
-  DEVM void vt() { recur_stage_vt<VS>(LBn, VP, BP, tid); }
+  DEVM void vt() {
+    recur_stage_vt<VS>(LBn, VP, BP, tid);
+  }
 };
 template <int VS, class ST>
-DEVI void recur_chunk_p(f32x4* S, const char* LB, ST& st, uint16_t* __restrict__ o,
-                        char* __restrict__ trash, long t0, int L, int H, int h, int sw, int wl,
-                        int lane, int lg, int lr) {
+DEVI void recur_chunk_p(
+    f32x4* S,
+    const char* LB,
+    ST& st,
+    uint16_t* __restrict__ o,
+    char* __restrict__ trash,
+    long t0,
+    int L,
+    int H,
+    int h,
+    int sw,
+    int wl,
+    int lane,
+    int lg,
+    int lr) {
   const char* const LW = LB + GB_W + lane * 16;
   const char* const LQ = LB + GB_Q + lane * 16;
   const char* const LK = LB + GB_K + lane * 16;
@@ -957,7 +1127,8 @@ DEVI void recur_chunk_p(f32x4* S, const char* LB, ST& st, uint16_t* __restrict__
   }
   u32x4 Sb[4];
 #pragma unroll
-  for (int ks = 0; ks < 4; ++ks) Sb[ks] = acc_pair_to_bf16(S[2 * ks], S[2 * ks + 1]);
+  for (int ks = 0; ks < 4; ++ks)
+    Sb[ks] = acc_pair_to_bf16(S[2 * ks], S[2 * ks + 1]);
   u32x4 wa[4], wb[4];
 #pragma unroll
   for (int ks = 0; ks < 4; ++ks) {
@@ -967,7 +1138,8 @@ DEVI void recur_chunk_p(f32x4* S, const char* LB, ST& st, uint16_t* __restrict__
   SCHED_FENCE();
   f32x4 U[4];
 #pragma unroll
-  for (int mt = 0; mt < 4; ++mt) U[mt] = zero4();
+  for (int mt = 0; mt < 4; ++mt)
+    U[mt] = zero4();
   MFMA_SB(U[0], U[1], ta0, ta1, vb, 1);
   MFMA_SB(U[2], U[3], ta2, ta3, vb, 2);
   SCHED_FENCE();
@@ -996,13 +1168,15 @@ DEVI void recur_chunk_p(f32x4* S, const char* LB, ST& st, uint16_t* __restrict__
     qd[ks] = *(const u32x4*)(LQ + (3 * 4 + ks) * 1024);
   }
   SCHED_FENCE();
-  f32x4 Ot[4];
+  f32x4 o_acc[4];
 #pragma unroll
-  for (int mt = 0; mt < 4; ++mt) Ot[mt] = zero4();
-  MFMA_SA(Ot[0], Ot[1], Sb, qa, qb, 4);
+  for (int mt = 0; mt < 4; ++mt)
+    o_acc[mt] = zero4();
+  MFMA_SA(o_acc[0], o_acc[1], Sb, qa, qb, 4);
   u32x4 Ub[2];
 #pragma unroll
-  for (int ks = 0; ks < 2; ++ks) Ub[ks] = acc_pair_to_bf16(U[2 * ks], U[2 * ks + 1]);
+  for (int ks = 0; ks < 2; ++ks)
+    Ub[ks] = acc_pair_to_bf16(U[2 * ks], U[2 * ks + 1]);
   SCHED_FENCE();
   u32x4 aq0[1], aq1[1], aq2[2], aq3[2];
   aq0[0] = *(const u32x4*)(LA + fa_idx(0, 0) * 1024);
@@ -1013,11 +1187,12 @@ DEVI void recur_chunk_p(f32x4* S, const char* LB, ST& st, uint16_t* __restrict__
     aq3[ks] = *(const u32x4*)(LA + fa_idx(3, ks) * 1024);
   }
   SCHED_FENCE();
-  MFMA_SA(Ot[2], Ot[3], Sb, qc, qd, 4);
+  MFMA_SA(o_acc[2], o_acc[3], Sb, qc, qd, 4);
   SCHED_FENCE();
   f32x4 gv[8];
 #pragma unroll
-  for (int mt = 0; mt < 4; ++mt) gv[mt] = *(const f32x4*)(LG + mt * 64);
+  for (int mt = 0; mt < 4; ++mt)
+    gv[mt] = *(const f32x4*)(LG + mt * 64);
   u32x4 ka[2], kb[2], kc[2], kd[2];
 #pragma unroll
   for (int ks = 0; ks < 2; ++ks) {
@@ -1027,8 +1202,8 @@ DEVI void recur_chunk_p(f32x4* S, const char* LB, ST& st, uint16_t* __restrict__
     kd[ks] = *(const u32x4*)(LK + (3 * 2 + ks) * 1024);
   }
   SCHED_FENCE();
-  MFMA_SA(Ot[0], Ot[1], Ub, aq0, aq1, 1);
-  MFMA_SA(Ot[2], Ot[3], Ub, aq2, aq3, 2);
+  MFMA_SA(o_acc[0], o_acc[1], Ub, aq0, aq1, 1);
+  MFMA_SA(o_acc[2], o_acc[3], Ub, aq2, aq3, 2);
   {
     char* const tr = trash + lane * 8;
 #pragma unroll
@@ -1038,17 +1213,21 @@ DEVI void recur_chunk_p(f32x4* S, const char* LB, ST& st, uint16_t* __restrict__
       const long row = ok ? t0 + i : t0;
       char* const real = (char*)(o + ((size_t)row * H + h) * KD + 16 * sw + 4 * lg);
       char* dst = ok ? real : tr;
-      *(u32x2*)dst = pack4(Ot[mt][0], Ot[mt][1], Ot[mt][2], Ot[mt][3]);
+      *(u32x2*)dst = pack4(o_acc[mt][0], o_acc[mt][1], o_acc[mt][2], o_acc[mt][3]);
     }
   }
 #pragma unroll
   for (int mt = 0; mt < 4; ++mt) {
-    S[mt][0] *= gv[mt][0]; S[mt][1] *= gv[mt][1]; S[mt][2] *= gv[mt][2]; S[mt][3] *= gv[mt][3];
+    S[mt][0] *= gv[mt][0];
+    S[mt][1] *= gv[mt][1];
+    S[mt][2] *= gv[mt][2];
+    S[mt][3] *= gv[mt][3];
   }
   st.half0();
   SCHED_FENCE();
 #pragma unroll
-  for (int mt = 4; mt < 8; ++mt) gv[mt] = *(const f32x4*)(LG + mt * 64);
+  for (int mt = 4; mt < 8; ++mt)
+    gv[mt] = *(const f32x4*)(LG + mt * 64);
   u32x4 ke[2], kf[2], kg[2], kh[2];
 #pragma unroll
   for (int ks = 0; ks < 2; ++ks) {
@@ -1062,7 +1241,10 @@ DEVI void recur_chunk_p(f32x4* S, const char* LB, ST& st, uint16_t* __restrict__
   MFMA_SB(S[2], S[3], kc, kd, Ub, 2);
 #pragma unroll
   for (int mt = 4; mt < 8; ++mt) {
-    S[mt][0] *= gv[mt][0]; S[mt][1] *= gv[mt][1]; S[mt][2] *= gv[mt][2]; S[mt][3] *= gv[mt][3];
+    S[mt][0] *= gv[mt][0];
+    S[mt][1] *= gv[mt][1];
+    S[mt][2] *= gv[mt][2];
+    S[mt][3] *= gv[mt][3];
   }
   st.half1();
   SCHED_FENCE();
@@ -1077,8 +1259,7 @@ DEVI void recur_chunk_p(f32x4* S, const char* LB, ST& st, uint16_t* __restrict__
 #ifndef KDA_APF
 #define KDA_APF 0
 #endif
-DEVI void store_recur_state(f32x4* S, float* state, int n, int H, int h,
-                            int sw, int lg, int lr) {
+DEVI void store_recur_state(f32x4* S, float* state, int n, int H, int h, int sw, int lg, int lr) {
   float* dst = state + (size_t)(n * H + h) * (KD * KD);
 #pragma unroll
   for (int mt = 0; mt < 8; ++mt)
@@ -1086,12 +1267,22 @@ DEVI void store_recur_state(f32x4* S, float* state, int n, int H, int h,
 }
 
 template <int VS, int PFD>
-DEVI void kda_recur_body_t(char* smem, const char* __restrict__ gbuf, const uint16_t* __restrict__ v,
-                           const float* __restrict__ h0, const long long* __restrict__ cu,
-                           uint16_t* __restrict__ o,
-                           float* __restrict__ ht, float* __restrict__ track_state,
-                           const long long* __restrict__ track_chunk_idx,
-                           char* __restrict__ trash, int T, int H, int N, int has_cu, int bid) {
+DEVI void kda_recur_body_t(
+    char* smem,
+    const char* __restrict__ gbuf,
+    const uint16_t* __restrict__ v,
+    const float* __restrict__ h0,
+    const long long* __restrict__ cu,
+    uint16_t* __restrict__ o,
+    float* __restrict__ ht,
+    float* __restrict__ track_state,
+    const long long* __restrict__ track_chunk_idx,
+    char* __restrict__ trash,
+    int T,
+    int H,
+    int N,
+    int has_cu,
+    int bid) {
   constexpr int NL = RecurPF<VS>::NL;
   constexpr int LBS = RecurPF<VS>::STRIDE;
   const int tid = TID;
@@ -1133,22 +1324,23 @@ DEVI void kda_recur_body_t(char* smem, const char* __restrict__ gbuf, const uint
     }
     bos = (long)cu[n];
     eos = (long)cu[n + 1];
-    for (int m = 0; m < n; ++m) pre += ((long)cu[m + 1] - (long)cu[m] + KC - 1) / KC;
+    for (int m = 0; m < n; ++m)
+      pre += ((long)cu[m + 1] - (long)cu[m] + KC - 1) / KC;
   }
   const int len = (int)(eos - bos);
   const int nch = (len + KC - 1) / KC;
   f32x4 S[8];
   const float* h0p = h0 + (size_t)(n * H + h) * (KD * KD);
 #pragma unroll
-  for (int mt = 0; mt < 8; ++mt) S[mt] = *(const f32x4*)(h0p + (16 * sw + lr) * KD + 16 * mt + 4 * lg);
+  for (int mt = 0; mt < 8; ++mt)
+    S[mt] = *(const f32x4*)(h0p + (16 * sw + lr) * KD + 16 * mt + 4 * lg);
   const long long track_c = track_chunk_idx ? track_chunk_idx[n] : -1;
   if (nch > 0) {
     const size_t bstride = (size_t)H * GB_BYTES;
     const char* gbase = gbuf + ((size_t)pre * H + h) * GB_BYTES;
 #define CH_L(c) ((len - (c) * KC) < KC ? (len - (c) * KC) : KC)
 #define CH_FETCH(Pd, VPd, BPd, c) \
-  recur_fetch<VS>(Pd, VPd, BPd, gbase + (size_t)(c) * bstride, v, bos + (long)(c) * KC, CH_L(c), H, h, \
-                  hf, tid)
+  recur_fetch<VS>(Pd, VPd, BPd, gbase + (size_t)(c) * bstride, v, bos + (long)(c) * KC, CH_L(c), H, h, hf, tid)
     if (PFD == 2) {
       u32x4 P0[NL], P1[NL], VP0[2], VP1[2];
       u32x2 BP0, BP1;
@@ -1169,18 +1361,15 @@ DEVI void kda_recur_body_t(char* smem, const char* __restrict__ gbuf, const uint
           const int cn = (c + 3 < nch) ? c + 3 : nch - 1;
           CH_FETCH(P1, VP1, BP1, cn);
           const int c1 = c + 1;
-          recur_chunk(S, smem + LBS, o, trash, bos + (long)c1 * KC, CH_L(c1), H, h, sw, w, lane, lg,
-                      lr);
+          recur_chunk(S, smem + LBS, o, trash, bos + (long)c1 * KC, CH_L(c1), H, h, sw, w, lane, lg, lr);
           recur_stage<VS>(smem, P0, VP0, BP0, tid);
           SYNC();
         }
       }
-      if (c < nch)
-        recur_chunk(S, smem, o, trash, bos + (long)c * KC, CH_L(c), H, h, sw, w, lane, lg, lr);
+      if (c < nch) recur_chunk(S, smem, o, trash, bos + (long)c * KC, CH_L(c), H, h, sw, w, lane, lg, lr);
 #if KDA_APF
     } else if constexpr (PFD == 4) {
-      recur_loop_apf<VS>(S, smem, gbase, bstride, v, o, trash, bos, len, nch, H, h, hf, sw, w, tid,
-                         lane, lg, lr);
+      recur_loop_apf<VS>(S, smem, gbase, bstride, v, o, trash, bos, len, nch, H, h, hf, sw, w, tid, lane, lg, lr);
 #endif
     } else {
       u32x4 P0[NL], VP0[2];
@@ -1192,13 +1381,23 @@ DEVI void kda_recur_body_t(char* smem, const char* __restrict__ gbuf, const uint
         CH_FETCH(P0, VP0, BP0, (nch > 1 ? 1 : 0));
         SYNC();
         for (int c = 0; c < nch; ++c) {
-          if (track_state && c == track_c)
-            store_recur_state(S, track_state, n, H, h, sw, lg, lr);
+          if (track_state && c == track_c) store_recur_state(S, track_state, n, H, h, sw, lg, lr);
           const int c2 = (c + 2 < nch) ? c + 2 : nch - 1;
-          StageRoll<VS> st{smem + ((c + 1) & 1) * LBS, P0, VP0, BP0, tid,
-                           gbase + (size_t)c2 * bstride, v, bos + (long)c2 * KC, CH_L(c2), H, h, hf};
-          recur_chunk_p<VS>(S, smem + (c & 1) * LBS, st, o, trash, bos + (long)c * KC, CH_L(c), H, h,
-                            sw, w, lane, lg, lr);
+          StageRoll<VS> st{
+              smem + ((c + 1) & 1) * LBS,
+              P0,
+              VP0,
+              BP0,
+              tid,
+              gbase + (size_t)c2 * bstride,
+              v,
+              bos + (long)c2 * KC,
+              CH_L(c2),
+              H,
+              h,
+              hf};
+          recur_chunk_p<VS>(
+              S, smem + (c & 1) * LBS, st, o, trash, bos + (long)c * KC, CH_L(c), H, h, sw, w, lane, lg, lr);
           SYNC();
         }
       } else
@@ -1206,17 +1405,15 @@ DEVI void kda_recur_body_t(char* smem, const char* __restrict__ gbuf, const uint
       {
         SYNC();
         for (int c = 0; c < nch; ++c) {
-          if (track_state && c == track_c)
-            store_recur_state(S, track_state, n, H, h, sw, lg, lr);
+          if (track_state && c == track_c) store_recur_state(S, track_state, n, H, h, sw, lg, lr);
           const int cn = (c + 1 < nch) ? c + 1 : nch - 1;
           CH_FETCH(P0, VP0, BP0, cn);
 #if KDA_PIPE
           StageP1<VS> st{smem + ((c + 1) & 1) * LBS, P0, VP0, BP0, tid};
-          recur_chunk_p<VS>(S, smem + (c & 1) * LBS, st, o, trash, bos + (long)c * KC, CH_L(c), H, h,
-                            sw, w, lane, lg, lr);
+          recur_chunk_p<VS>(
+              S, smem + (c & 1) * LBS, st, o, trash, bos + (long)c * KC, CH_L(c), H, h, sw, w, lane, lg, lr);
 #else
-          recur_chunk(S, smem + (c & 1) * LBS, o, trash, bos + (long)c * KC, CH_L(c), H, h, sw, w,
-                      lane, lg, lr);
+          recur_chunk(S, smem + (c & 1) * LBS, o, trash, bos + (long)c * KC, CH_L(c), H, h, sw, w, lane, lg, lr);
           recur_stage<VS>(smem + ((c + 1) & 1) * LBS, P0, VP0, BP0, tid);
 #endif
           SYNC();
@@ -1228,7 +1425,8 @@ DEVI void kda_recur_body_t(char* smem, const char* __restrict__ gbuf, const uint
   }
   float* htp = ht + (size_t)(n * H + h) * (KD * KD);
 #pragma unroll
-  for (int mt = 0; mt < 8; ++mt) *(f32x4*)(htp + (16 * sw + lr) * KD + 16 * mt + 4 * lg) = S[mt];
+  for (int mt = 0; mt < 8; ++mt)
+    *(f32x4*)(htp + (16 * sw + lr) * KD + 16 * mt + 4 * lg) = S[mt];
 }
 template <int VS>
 DEVI void recur_wg_map(int bid, int N, int H, int& ph, int& pt) {
@@ -1265,7 +1463,8 @@ DEVI RecurSeq recur_seq(int p, const long long* __restrict__ cu, int T, int N, i
     }
     s.bos = (long)cu[s.n];
     eos = (long)cu[s.n + 1];
-    for (int m = 0; m < s.n; ++m) s.pre += ((long)cu[m + 1] - (long)cu[m] + KC - 1) / KC;
+    for (int m = 0; m < s.n; ++m)
+      s.pre += ((long)cu[m + 1] - (long)cu[m] + KC - 1) / KC;
   }
   s.len = eos - s.bos;
   s.nch = (int)((s.len + KC - 1) / KC);
@@ -1275,10 +1474,21 @@ DEVI RecurSeq recur_seq(int p, const long long* __restrict__ cu, int T, int N, i
 #define LOADER_SLEEP()
 #endif
 template <int VS>
-DEVI void kda_recur_body_ws(char* smem, const char* __restrict__ gbuf, const uint16_t* __restrict__ v,
-                            const float* __restrict__ h0, const long long* __restrict__ cu,
-                            uint16_t* __restrict__ o, float* __restrict__ ht, char* __restrict__ trash,
-                            int T, int H, int N, int has_cu, int bid, int nmap) {
+DEVI void kda_recur_body_ws(
+    char* smem,
+    const char* __restrict__ gbuf,
+    const uint16_t* __restrict__ v,
+    const float* __restrict__ h0,
+    const long long* __restrict__ cu,
+    uint16_t* __restrict__ o,
+    float* __restrict__ ht,
+    char* __restrict__ trash,
+    int T,
+    int H,
+    int N,
+    int has_cu,
+    int bid,
+    int nmap) {
   constexpr int NM = 8 / VS;
   constexpr int NL = RecurPF<VS>::NL;
   constexpr int LBS = RecurPF<VS>::STRIDE;
@@ -1304,24 +1514,25 @@ DEVI void kda_recur_body_ws(char* smem, const char* __restrict__ gbuf, const uin
     f32x4 S[8];
     const float* h0p = h0 + (size_t)(n * H + h) * (KD * KD);
 #pragma unroll
-    for (int mt = 0; mt < 8; ++mt) S[mt] = *(const f32x4*)(h0p + (16 * sw + lr) * KD + 16 * mt + 4 * lg);
+    for (int mt = 0; mt < 8; ++mt)
+      S[mt] = *(const f32x4*)(h0p + (16 * sw + lr) * KD + 16 * mt + 4 * lg);
     if (nch > 0) {
       StageNone st;
       SYNC();
       for (int c = 0; c < nch; ++c) {
-        recur_chunk_p<VS>(S, smem + (c & 1) * LBS, st, o, trash, bos + (long)c * KC, CH_L(c), H, h,
-                          sw, wu, lane, lg, lr);
+        recur_chunk_p<VS>(
+            S, smem + (c & 1) * LBS, st, o, trash, bos + (long)c * KC, CH_L(c), H, h, sw, wu, lane, lg, lr);
         SYNC();
       }
     }
     float* htp = ht + (size_t)(n * H + h) * (KD * KD);
 #pragma unroll
-    for (int mt = 0; mt < 8; ++mt) *(f32x4*)(htp + (16 * sw + lr) * KD + 16 * mt + 4 * lg) = S[mt];
+    for (int mt = 0; mt < 8; ++mt)
+      *(f32x4*)(htp + (16 * sw + lr) * KD + 16 * mt + 4 * lg) = S[mt];
   } else if (nch > 0) {
     const int lt = tid - 64 * NM;
 #define CH_FETCH_L(Pd, VPd, BPd, c) \
-  recur_fetch<VS>(Pd, VPd, BPd, gbase + (size_t)(c) * bstride, v, bos + (long)(c) * KC, CH_L(c), H, h, \
-                  pt, lt)
+  recur_fetch<VS>(Pd, VPd, BPd, gbase + (size_t)(c) * bstride, v, bos + (long)(c) * KC, CH_L(c), H, h, pt, lt)
     u32x4 P0[NL], VP0[2];
     u32x2 BP0;
     CH_FETCH_L(P0, VP0, BP0, 0);
@@ -1339,43 +1550,62 @@ DEVI void kda_recur_body_ws(char* smem, const char* __restrict__ gbuf, const uin
   }
 #undef CH_L
 }
-DEVI int recur_mx_nsplit(const long long* __restrict__ cu, int T, int H, int N, int has_cu, int ncu,
-                         int force) {
+DEVI int recur_mx_nsplit(const long long* __restrict__ cu, int T, int H, int N, int has_cu, int ncu, int force) {
   if (!has_cu || N < 2 || 2 * H > ncu || force == 2) return 0;
   if (force == 1) return 1;
   const RecurSeq s0 = recur_seq(0, cu, T, N, has_cu);
   long tot = 0;
-  for (int m = 0; m < N; ++m) tot += ((long)cu[m + 1] - (long)cu[m] + KC - 1) / KC;
+  for (int m = 0; m < N; ++m)
+    tot += ((long)cu[m + 1] - (long)cu[m] + KC - 1) / KC;
   return (10L * (long)s0.nch * (long)ncu > 11L * (long)H * tot) ? 1 : 0;
 }
 template <int VS>
-DEVI int recur_part_nch(int bid, int nmap, const long long* __restrict__ cu, int T, int H, int N,
-                        int has_cu) {
+DEVI int recur_part_nch(int bid, int nmap, const long long* __restrict__ cu, int T, int H, int N, int has_cu) {
   int ph, pt;
   recur_wg_map<VS>(bid, nmap, H, ph, pt);
   return recur_seq(ph / H, cu, T, N, has_cu).nch;
 }
-DEVI void kda_recur_body_mx(char* smem, const char* __restrict__ gbuf, const uint16_t* __restrict__ v,
-                            const float* __restrict__ h0, const long long* __restrict__ cu,
-                            uint16_t* __restrict__ o, float* __restrict__ ht, char* __restrict__ trash,
-                            int T, int H, int N, int has_cu, int ncu, int force) {
+DEVI void kda_recur_body_mx(
+    char* smem,
+    const char* __restrict__ gbuf,
+    const uint16_t* __restrict__ v,
+    const float* __restrict__ h0,
+    const long long* __restrict__ cu,
+    uint16_t* __restrict__ o,
+    float* __restrict__ ht,
+    char* __restrict__ trash,
+    int T,
+    int H,
+    int N,
+    int has_cu,
+    int ncu,
+    int force) {
   const int ns = recur_mx_nsplit(cu, T, H, N, has_cu, ncu, force);
   const int bid = BID;
   if (bid < 2 * H * ns) {
     kda_recur_body_ws<2>(smem, gbuf, v, h0, cu, o, ht, trash, T, H, N, has_cu, bid, ns);
   } else {
     const int b1 = bid - H * ns;
-    if (b1 < N * H)
-      kda_recur_body_t<1, 1>(smem, gbuf, v, h0, cu, o, ht, nullptr, nullptr, trash,
-                               T, H, N, has_cu, b1);
+    if (b1 < N * H) kda_recur_body_t<1, 1>(smem, gbuf, v, h0, cu, o, ht, nullptr, nullptr, trash, T, H, N, has_cu, b1);
   }
 }
 #if KDA_DMA
 template <int VS>
-DEVI void kda_recur_body_dma(char* smem, const char* __restrict__ gbuf, const uint16_t* __restrict__ v,
-                             const float* __restrict__ h0, const long long* __restrict__ cu,
-                             uint16_t* __restrict__ o, float* __restrict__ ht, char* __restrict__ trash,
-                             int T, int H, int N, int has_cu, int bid, int nmap) {
+DEVI void kda_recur_body_dma(
+    char* smem,
+    const char* __restrict__ gbuf,
+    const uint16_t* __restrict__ v,
+    const float* __restrict__ h0,
+    const long long* __restrict__ cu,
+    uint16_t* __restrict__ o,
+    float* __restrict__ ht,
+    char* __restrict__ trash,
+    int T,
+    int H,
+    int N,
+    int has_cu,
+    int bid,
+    int nmap) {
   constexpr int NWV = 8 / VS;
   constexpr int LBS = RecurPF<VS>::STRIDE;
   const int tid = TID;
@@ -1396,7 +1626,8 @@ DEVI void kda_recur_body_dma(char* smem, const char* __restrict__ gbuf, const ui
   f32x4 S[8];
   const float* h0p = h0 + (size_t)(n * H + h) * (KD * KD);
 #pragma unroll
-  for (int mt = 0; mt < 8; ++mt) S[mt] = *(const f32x4*)(h0p + (16 * sw + lr) * KD + 16 * mt + 4 * lg);
+  for (int mt = 0; mt < 8; ++mt)
+    S[mt] = *(const f32x4*)(h0p + (16 * sw + lr) * KD + 16 * mt + 4 * lg);
   if (nch > 0) {
     const size_t bstride = (size_t)H * GB_BYTES;
     const char* gbase = gbuf + ((size_t)sq.pre * H + h) * GB_BYTES;
@@ -1416,8 +1647,7 @@ DEVI void kda_recur_body_dma(char* smem, const char* __restrict__ gbuf, const ui
       CH_FETCH_VB(VP0, BP0, c1);
       recur_dma<VS>(LBn, gbase + (size_t)c1 * bstride, wu, lane);
       StageVT<VS> st{LBn, VP0, BP0, tid};
-      recur_chunk_p<VS>(S, smem + (c & 1) * LBS, st, o, trash, bos + (long)c * KC, CH_L(c), H, h, sw, wu,
-                        lane, lg, lr);
+      recur_chunk_p<VS>(S, smem + (c & 1) * LBS, st, o, trash, bos + (long)c * KC, CH_L(c), H, h, sw, wu, lane, lg, lr);
       dma_wait_chunk();
       SYNC();
     }
@@ -1426,13 +1656,24 @@ DEVI void kda_recur_body_dma(char* smem, const char* __restrict__ gbuf, const ui
   }
   float* htp = ht + (size_t)(n * H + h) * (KD * KD);
 #pragma unroll
-  for (int mt = 0; mt < 8; ++mt) *(f32x4*)(htp + (16 * sw + lr) * KD + 16 * mt + 4 * lg) = S[mt];
+  for (int mt = 0; mt < 8; ++mt)
+    *(f32x4*)(htp + (16 * sw + lr) * KD + 16 * mt + 4 * lg) = S[mt];
 }
-DEVI void kda_recur_body_mx_dma(char* smem, const char* __restrict__ gbuf, const uint16_t* __restrict__ v,
-                                const float* __restrict__ h0, const long long* __restrict__ cu,
-                                uint16_t* __restrict__ o, float* __restrict__ ht,
-                                char* __restrict__ trash, int T, int H, int N, int has_cu, int ncu,
-                                int force) {
+DEVI void kda_recur_body_mx_dma(
+    char* smem,
+    const char* __restrict__ gbuf,
+    const uint16_t* __restrict__ v,
+    const float* __restrict__ h0,
+    const long long* __restrict__ cu,
+    uint16_t* __restrict__ o,
+    float* __restrict__ ht,
+    char* __restrict__ trash,
+    int T,
+    int H,
+    int N,
+    int has_cu,
+    int ncu,
+    int force) {
   const int ns = recur_mx_nsplit(cu, T, H, N, has_cu, ncu, force);
   const int bid = BID;
   if (bid < 2 * H * ns) {
@@ -1441,7 +1682,8 @@ DEVI void kda_recur_body_mx_dma(char* smem, const char* __restrict__ gbuf, const
     } else {
       const int nch = recur_part_nch<2>(bid, ns, cu, T, H, N, has_cu);
       if (nch > 0)
-        for (int c = 0; c <= nch; ++c) SYNC();
+        for (int c = 0; c <= nch; ++c)
+          SYNC();
     }
   } else {
     const int b1 = bid - H * ns;
@@ -1465,20 +1707,38 @@ DEVI void opq_init(char* smem, int wv) {
   if ((TID & 63) == 0) OPQ_STORE((int*)(smem + F_ZERO + 4 * wv), 0);
   WAVE_SYNC();
 }
-DEVI int opq_pre(const char* smem, int wv) { return OPQ_LOAD((int*)(smem + F_ZERO + 4 * wv)); }
+DEVI int opq_pre(const char* smem, int wv) {
+  return OPQ_LOAD((int*)(smem + F_ZERO + 4 * wv));
+}
 #endif
-DEVI int opq_lane(int z) { return (TID + z) & 63; }
+DEVI int opq_lane(int z) {
+  return (TID + z) & 63;
+}
 #ifdef KDA_EMU
-DEVI float shfl_up64l(float x, int d, int lane) { return emu_shfl(x, lane >= d ? lane - d : lane); }
+DEVI float shfl_up64l(float x, int d, int lane) {
+  return emu_shfl(x, lane >= d ? lane - d : lane);
+}
 #else
-DEVI float shfl_up64l(float x, int d, int lane) { return lane_shfl(x, lane >= d ? lane - d : lane); }
+DEVI float shfl_up64l(float x, int d, int lane) {
+  return lane_shfl(x, lane >= d ? lane - d : lane);
+}
 #endif
 #ifndef KDA_FUSED_DMA
 #define KDA_FUSED_DMA 0
 #endif
-DEVI void fused_load_rows(IntraRaw& r, long t0, int L, const uint16_t* __restrict__ q,
-                          const uint16_t* __restrict__ k, const uint16_t* __restrict__ g,
-                          const uint16_t* __restrict__ beta, int H, int h, int w, int lg, int lr) {
+DEVI void fused_load_rows(
+    IntraRaw& r,
+    long t0,
+    int L,
+    const uint16_t* __restrict__ q,
+    const uint16_t* __restrict__ k,
+    const uint16_t* __restrict__ g,
+    const uint16_t* __restrict__ beta,
+    int H,
+    int h,
+    int w,
+    int lg,
+    int lr) {
 #pragma unroll
   for (int i = 0; i < 4; ++i) {
     int R = 16 * w + 4 * lg + i;
@@ -1495,8 +1755,7 @@ DEVI void fused_load_rows(IntraRaw& r, long t0, int L, const uint16_t* __restric
     r.b[i] = (uint32_t)beta[(size_t)t * H + h];
   }
 }
-DEVI void fused_load_beta(uint32_t* b, long t0, int L, const uint16_t* __restrict__ beta, int H, int h,
-                          int w, int lg) {
+DEVI void fused_load_beta(uint32_t* b, long t0, int L, const uint16_t* __restrict__ beta, int H, int h, int w, int lg) {
 #pragma unroll
   for (int i = 0; i < 4; ++i) {
     int R = 16 * w + 4 * lg + i;
@@ -1504,9 +1763,9 @@ DEVI void fused_load_beta(uint32_t* b, long t0, int L, const uint16_t* __restric
     b[i] = (uint32_t)beta[(size_t)t * H + h];
   }
 }
-DEVI void fused_load_consts(IntraRaw& r, const float* __restrict__ A_log,
-                            const float* __restrict__ dt_bias, int h, int lr) {
-  r.alog = A_log[h];
+DEVI void
+fused_load_consts(IntraRaw& r, const float* __restrict__ A_log, const float* __restrict__ dt_bias, int h, int lr) {
+  r.a_log = A_log[h];
   r.dt0 = *(const f32x4*)(dt_bias + h * KD + 8 * lr);
   r.dt1 = *(const f32x4*)(dt_bias + h * KD + 8 * lr + 4);
 }
@@ -1568,7 +1827,7 @@ DEVI void intra_process_f(char* smem, int L, IntraRaw& cur, char* gb, float scal
   float* const BETA = LF + LA_BETA / 4;
   float* const TAU = LF + LA_TAU / 4;
   float* const FACD = LF + LA_FACD / 4;
-  const float a_h = EXP2(cur.alog * LOG2E_F);
+  const float a_h = EXP2(cur.a_log * LOG2E_F);
   const float a2 = -a_h * LOG2E_F;
   const float k1 = 1.0f / (-5.0f * LOG2E_F);
   f32x2 b2v[4];
@@ -1600,7 +1859,8 @@ DEVI void intra_process_f(char* smem, int L, IntraRaw& cur, char* gb, float scal
     for (int i = 0; i < 4; ++i) {
       const bool ok = 16 * wu + 4 * lg + i < L;
 #pragma unroll
-      for (int p = 0; p < 4; ++p) lam2[i][p] = ok ? lam2[i][p] : sp2(0.f);
+      for (int p = 0; p < 4; ++p)
+        lam2[i][p] = ok ? lam2[i][p] : sp2(0.f);
       bsig[i] = ok ? bsig[i] : 0.f;
     }
   }
@@ -1612,7 +1872,8 @@ DEVI void intra_process_f(char* smem, int L, IntraRaw& cur, char* gb, float scal
 #pragma unroll
   for (int i = 1; i < 4; ++i)
 #pragma unroll
-    for (int p = 0; p < 4; ++p) lam2[i][p] += lam2[i - 1][p];
+    for (int p = 0; p < 4; ++p)
+      lam2[i][p] += lam2[i - 1][p];
   {
     const float m1 = (lg >= 1) ? 1.f : 0.f, m2 = (lg >= 2) ? 1.f : 0.f;
     f32x2 totw[4];
@@ -1623,20 +1884,28 @@ DEVI void intra_process_f(char* smem, int L, IntraRaw& cur, char* gb, float scal
       inc = mk2(shfl_up64l(inc[0], 32, lane), shfl_up64l(inc[1], 32, lane)) * sp2(m2) + inc;
       const f32x2 excl = inc - tot;
 #pragma unroll
-      for (int i = 0; i < 4; ++i) lam2[i][p] += excl;
+      for (int i = 0; i < 4; ++i)
+        lam2[i][p] += excl;
       totw[p] = inc;
     }
     if (lg == 3) {
       f32x4 t0v, t1v;
-      t0v[0] = totw[0][0]; t0v[1] = totw[0][1]; t0v[2] = totw[1][0]; t0v[3] = totw[1][1];
-      t1v[0] = totw[2][0]; t1v[1] = totw[2][1]; t1v[2] = totw[3][0]; t1v[3] = totw[3][1];
+      t0v[0] = totw[0][0];
+      t0v[1] = totw[0][1];
+      t0v[2] = totw[1][0];
+      t0v[3] = totw[1][1];
+      t1v[0] = totw[2][0];
+      t1v[1] = totw[2][1];
+      t1v[2] = totw[3][0];
+      t1v[3] = totw[3][1];
       *(f32x4*)(TAU + wu * KD + 8 * lr) = t0v;
       *(f32x4*)(TAU + wu * KD + 8 * lr + 4) = t1v;
     }
   }
   if (lr == 0) {
 #pragma unroll
-    for (int i = 0; i < 4; ++i) BETA[16 * wu + 4 * lg + i] = bsig[i];
+    for (int i = 0; i < 4; ++i)
+      BETA[16 * wu + 4 * lg + i] = bsig[i];
   }
   F_SYNC_RELANE();
   u32x2 kgt[4][2];
@@ -1704,8 +1973,10 @@ DEVI void intra_process_f(char* smem, int L, IntraRaw& cur, char* gb, float scal
       const int n = 4 * lg + i;
       char* qb = gb + GB_Q + (size_t)((wu * 4 + ksq) * 64) * 16 + h1 * 8;
       u32x2 lo, hi;
-      lo[0] = qgp[0]; lo[1] = qgp[1];
-      hi[0] = qgp[2]; hi[1] = qgp[3];
+      lo[0] = qgp[0];
+      lo[1] = qgp[1];
+      hi[0] = qgp[2];
+      hi[1] = qgp[3];
       gst8(qb + (n + 16 * ga) * 16, lo);
       gst8(qb + (n + 16 * (ga + 1)) * 16, hi);
     }
@@ -1766,7 +2037,8 @@ DEVI void intra_process_f(char* smem, int L, IntraRaw& cur, char* gb, float scal
     }
     if (wu >= 2) {
       u32x2 z;
-      z[0] = 0u; z[1] = 0u;
+      z[0] = 0u;
+      z[1] = 0u;
       gst8(gb + GB_A + (size_t)(fa_idx(wu == 2 ? 0 : 2, wu == 2 ? 0 : 1) * 64 + lane) * 16 + 8, z);
     }
   }
@@ -1788,7 +2060,8 @@ DEVI void intra_process_f(char* smem, int L, IntraRaw& cur, char* gb, float scal
 #pragma unroll
     for (int p = 0; p < 4; ++p)
 #pragma unroll
-      for (int e = 0; e < 2; ++e) lds_st8(KGT, tr_idx(8 * lr + 2 * p + e, jrow), kgt[p][e]);
+      for (int e = 0; e < 2; ++e)
+        lds_st8(KGT, tr_idx(8 * lr + 2 * p + e, jrow), kgt[p][e]);
     {
       const int tidl = 64 * wu + lane;
       int blk = tidl >> 7, rr = (tidl >> 3) & 15, cc = (tidl & 7) * 2;
@@ -1805,7 +2078,8 @@ DEVI void intra_process_f(char* smem, int L, IntraRaw& cur, char* gb, float scal
       for (int ii = 0; ii < 16; ++ii) {
         f32x2 acc = sp2(0.f);
 #pragma unroll
-        for (int kk = 0; kk < (ii >> 1); ++kk) acc += *(const f32x2*)(Ab + ii * 20 + 2 * kk) * t2[kk];
+        for (int kk = 0; kk < (ii >> 1); ++kk)
+          acc += *(const f32x2*)(Ab + ii * 20 + 2 * kk) * t2[kk];
         float s = acc[0] + acc[1];
         if (ii & 1) s += Ab[ii * 20 + ii - 1] * t2[ii >> 1][0];
         t2[ii >> 1][ii & 1] = ((ii == j) ? 1.f : 0.f) - s;
@@ -1821,9 +2095,12 @@ DEVI void intra_process_f(char* smem, int L, IntraRaw& cur, char* gb, float scal
     }
   }
   F_SYNC_RELANE();
-  if (wu == 0) p5_col<0>(AKK, TFD, T16, lg, lr);
-  else if (wu == 1) p5_col<1>(AKK, TFD, T16, lg, lr);
-  else if (wu == 2) p5_col<2>(AKK, TFD, T16, lg, lr);
+  if (wu == 0)
+    p5_col<0>(AKK, TFD, T16, lg, lr);
+  else if (wu == 1)
+    p5_col<1>(AKK, TFD, T16, lg, lr);
+  else if (wu == 2)
+    p5_col<2>(AKK, TFD, T16, lg, lr);
   F_SYNC_RELANE();
   {
 #pragma unroll
@@ -1841,15 +2118,16 @@ DEVI void intra_process_f(char* smem, int L, IntraRaw& cur, char* gb, float scal
       acc[1] = zero4();
       MFMA_SB(acc[0], acc[1], a0, a1, b, nks);
       u32x4 fr;
-      fr[0] = pk_bf16(-acc[0][0], -acc[0][1]); fr[1] = pk_bf16(-acc[0][2], -acc[0][3]);
-      fr[2] = pk_bf16(-acc[1][0], -acc[1][1]); fr[3] = pk_bf16(-acc[1][2], -acc[1][3]);
+      fr[0] = pk_bf16(-acc[0][0], -acc[0][1]);
+      fr[1] = pk_bf16(-acc[0][2], -acc[0][3]);
+      fr[2] = pk_bf16(-acc[1][0], -acc[1][1]);
+      fr[3] = pk_bf16(-acc[1][2], -acc[1][3]);
       gst16(gb + GB_W + (size_t)((nt * 4 + wu) * 64 + lane) * 16, fr);
     }
     for (int f = wu; f < 6; f += 4) {
       const int mt = f < 2 ? f : 2 + ((f - 2) >> 1);
       const int ks = f < 2 ? 0 : ((f - 2) & 1);
-      gst16(gb + GB_T + (size_t)(f * 64 + lane) * 16,
-            lds_ld16(T16, a16_idx(16 * mt + lr, 32 * ks + 8 * lg)));
+      gst16(gb + GB_T + (size_t)(f * 64 + lane) * 16, lds_ld16(T16, a16_idx(16 * mt + lr, 32 * ks + 8 * lg)));
     }
   }
 }
@@ -1880,13 +2158,26 @@ DEVI void fused_stage_vt(char* VTB, const u32x4* VP, const float* BETA, int lt) 
   }
 }
 template <int PF>
-DEVI void kda_fused_body(char* smem, const uint16_t* __restrict__ q, const uint16_t* __restrict__ k,
-                         const uint16_t* __restrict__ v, const uint16_t* __restrict__ g,
-                         const uint16_t* __restrict__ beta, const float* __restrict__ A_log,
-                         const float* __restrict__ dt_bias, const float* __restrict__ h0,
-                         const long long* __restrict__ cu, uint16_t* __restrict__ o,
-                         float* __restrict__ ht, char* __restrict__ trash, int T, int H, int N, int has_cu,
-                         float scale, int bid) {
+DEVI void kda_fused_body(
+    char* smem,
+    const uint16_t* __restrict__ q,
+    const uint16_t* __restrict__ k,
+    const uint16_t* __restrict__ v,
+    const uint16_t* __restrict__ g,
+    const uint16_t* __restrict__ beta,
+    const float* __restrict__ A_log,
+    const float* __restrict__ dt_bias,
+    const float* __restrict__ h0,
+    const long long* __restrict__ cu,
+    uint16_t* __restrict__ o,
+    float* __restrict__ ht,
+    char* __restrict__ trash,
+    int T,
+    int H,
+    int N,
+    int has_cu,
+    float scale,
+    int bid) {
   const int wu = WAVE_U();
   const int p = bid / H;
   const int h = bid - p * H;
@@ -1944,7 +2235,8 @@ DEVI void kda_fused_body(char* smem, const uint16_t* __restrict__ q, const uint1
           fused_rows_from_lds(raw, smem, wu, l1 >> 4, l1 & 15);
         }
 #pragma unroll
-        for (int i = 0; i < 4; ++i) raw.b[i] = bnx[i];
+        for (int i = 0; i < 4; ++i)
+          raw.b[i] = bnx[i];
         intra_process_f(smem, L, raw, BLK, scale, FusedNoPF{}, z1);
         const int zs = opq_pre(smem, wu);
         SYNC();
@@ -2031,7 +2323,7 @@ DEVI void intra_process_fp(char* smem, int L, IntraRaw& cur, char* gb, float sca
   float* const BETA = LF + LA_BETA / 4;
   float* const TAU = LF + LA_TAU / 4;
   float* const FACD = LF + LA_FACD / 4;
-  const float a_h = EXP2(cur.alog * LOG2E_F);
+  const float a_h = EXP2(cur.a_log * LOG2E_F);
   const float a2 = -a_h * LOG2E_F;
   const float k1 = 1.0f / (-5.0f * LOG2E_F);
   f32x2 b2v[4];
@@ -2070,7 +2362,8 @@ DEVI void intra_process_fp(char* smem, int L, IntraRaw& cur, char* gb, float sca
     for (int i = 0; i < 4; ++i) {
       const bool ok = 16 * wu + 4 * lg + i < L;
 #pragma unroll
-      for (int p = 0; p < 4; ++p) lam2[i][p] = ok ? lam2[i][p] : sp2(0.f);
+      for (int p = 0; p < 4; ++p)
+        lam2[i][p] = ok ? lam2[i][p] : sp2(0.f);
       bsig[i] = ok ? bsig[i] : 0.f;
     }
   }
@@ -2082,7 +2375,8 @@ DEVI void intra_process_fp(char* smem, int L, IntraRaw& cur, char* gb, float sca
 #pragma unroll
   for (int i = 1; i < 4; ++i)
 #pragma unroll
-    for (int p = 0; p < 4; ++p) lam2[i][p] += lam2[i - 1][p];
+    for (int p = 0; p < 4; ++p)
+      lam2[i][p] += lam2[i - 1][p];
   {
     const float m1 = (lg >= 1) ? 1.f : 0.f, m2 = (lg >= 2) ? 1.f : 0.f;
     f32x2 totw[4];
@@ -2093,20 +2387,28 @@ DEVI void intra_process_fp(char* smem, int L, IntraRaw& cur, char* gb, float sca
       inc = mk2(shfl_up64l(inc[0], 32, lane), shfl_up64l(inc[1], 32, lane)) * sp2(m2) + inc;
       const f32x2 excl = inc - tot;
 #pragma unroll
-      for (int i = 0; i < 4; ++i) lam2[i][p] += excl;
+      for (int i = 0; i < 4; ++i)
+        lam2[i][p] += excl;
       totw[p] = inc;
     }
     if (lg == 3) {
       f32x4 t0v, t1v;
-      t0v[0] = totw[0][0]; t0v[1] = totw[0][1]; t0v[2] = totw[1][0]; t0v[3] = totw[1][1];
-      t1v[0] = totw[2][0]; t1v[1] = totw[2][1]; t1v[2] = totw[3][0]; t1v[3] = totw[3][1];
+      t0v[0] = totw[0][0];
+      t0v[1] = totw[0][1];
+      t0v[2] = totw[1][0];
+      t0v[3] = totw[1][1];
+      t1v[0] = totw[2][0];
+      t1v[1] = totw[2][1];
+      t1v[2] = totw[3][0];
+      t1v[3] = totw[3][1];
       *(f32x4*)(TAU + wu * KD + 8 * lr) = t0v;
       *(f32x4*)(TAU + wu * KD + 8 * lr + 4) = t1v;
     }
   }
   if (lr == 0) {
 #pragma unroll
-    for (int i = 0; i < 4; ++i) BETA[16 * wu + 4 * lg + i] = bsig[i];
+    for (int i = 0; i < 4; ++i)
+      BETA[16 * wu + 4 * lg + i] = bsig[i];
   }
   F_SYNC_RELANE();
   u32x2 kgt[4][2];
@@ -2168,8 +2470,10 @@ DEVI void intra_process_fp(char* smem, int L, IntraRaw& cur, char* gb, float sca
       lds_st16(QR, rx_idx(R, 8 * lr), qrp);
       lds_st16(KR, rx_idx(R, 8 * lr), krp);
       lds_st16(KE, rx_idx(R, 8 * lr), kep);
-      qgh[i][0][0] = qgp[0]; qgh[i][0][1] = qgp[1];
-      qgh[i][1][0] = qgp[2]; qgh[i][1][1] = qgp[3];
+      qgh[i][0][0] = qgp[0];
+      qgh[i][0][1] = qgp[1];
+      qgh[i][1][0] = qgp[2];
+      qgh[i][1][1] = qgp[3];
     }
   }
   pf.qk(cur, lg, lr);
@@ -2242,7 +2546,8 @@ DEVI void intra_process_fp(char* smem, int L, IntraRaw& cur, char* gb, float sca
     }
     if (wu >= 2) {
       u32x2 z;
-      z[0] = 0u; z[1] = 0u;
+      z[0] = 0u;
+      z[1] = 0u;
       gst8(gb + GB_A + (size_t)(fa_idx(wu == 2 ? 0 : 2, wu == 2 ? 0 : 1) * 64 + lane) * 16 + 8, z);
     }
   }
@@ -2264,7 +2569,8 @@ DEVI void intra_process_fp(char* smem, int L, IntraRaw& cur, char* gb, float sca
 #pragma unroll
     for (int p = 0; p < 4; ++p)
 #pragma unroll
-      for (int e = 0; e < 2; ++e) lds_st8(KGT, tr_idx(8 * lr + 2 * p + e, jrow), kgt[p][e]);
+      for (int e = 0; e < 2; ++e)
+        lds_st8(KGT, tr_idx(8 * lr + 2 * p + e, jrow), kgt[p][e]);
     {
       const int tidl = 64 * wu + lane;
       int blk = tidl >> 7, rr = (tidl >> 3) & 15, cc = (tidl & 7) * 2;
@@ -2281,7 +2587,8 @@ DEVI void intra_process_fp(char* smem, int L, IntraRaw& cur, char* gb, float sca
       for (int ii = 0; ii < 16; ++ii) {
         f32x2 acc = sp2(0.f);
 #pragma unroll
-        for (int kk = 0; kk < (ii >> 1); ++kk) acc += *(const f32x2*)(Ab + ii * 20 + 2 * kk) * t2[kk];
+        for (int kk = 0; kk < (ii >> 1); ++kk)
+          acc += *(const f32x2*)(Ab + ii * 20 + 2 * kk) * t2[kk];
         float s = acc[0] + acc[1];
         if (ii & 1) s += Ab[ii * 20 + ii - 1] * t2[ii >> 1][0];
         t2[ii >> 1][ii & 1] = ((ii == j) ? 1.f : 0.f) - s;
@@ -2297,9 +2604,12 @@ DEVI void intra_process_fp(char* smem, int L, IntraRaw& cur, char* gb, float sca
     }
   }
   F_SYNC_RELANE();
-  if (wu == 0) p5_col<0>(AKK, TFD, T16, lg, lr);
-  else if (wu == 1) p5_col<1>(AKK, TFD, T16, lg, lr);
-  else if (wu == 2) p5_col<2>(AKK, TFD, T16, lg, lr);
+  if (wu == 0)
+    p5_col<0>(AKK, TFD, T16, lg, lr);
+  else if (wu == 1)
+    p5_col<1>(AKK, TFD, T16, lg, lr);
+  else if (wu == 2)
+    p5_col<2>(AKK, TFD, T16, lg, lr);
   F_SYNC_RELANE();
   {
 #pragma unroll
@@ -2317,15 +2627,16 @@ DEVI void intra_process_fp(char* smem, int L, IntraRaw& cur, char* gb, float sca
       acc[1] = zero4();
       MFMA_SB(acc[0], acc[1], a0, a1, b, nks);
       u32x4 fr;
-      fr[0] = pk_bf16(-acc[0][0], -acc[0][1]); fr[1] = pk_bf16(-acc[0][2], -acc[0][3]);
-      fr[2] = pk_bf16(-acc[1][0], -acc[1][1]); fr[3] = pk_bf16(-acc[1][2], -acc[1][3]);
+      fr[0] = pk_bf16(-acc[0][0], -acc[0][1]);
+      fr[1] = pk_bf16(-acc[0][2], -acc[0][3]);
+      fr[2] = pk_bf16(-acc[1][0], -acc[1][1]);
+      fr[3] = pk_bf16(-acc[1][2], -acc[1][3]);
       gst16(gb + GB_W + (size_t)((nt * 4 + wu) * 64 + lane) * 16, fr);
     }
     for (int f = wu; f < 6; f += 4) {
       const int mt = f < 2 ? f : 2 + ((f - 2) >> 1);
       const int ks = f < 2 ? 0 : ((f - 2) & 1);
-      gst16(gb + GB_T + (size_t)(f * 64 + lane) * 16,
-            lds_ld16(T16, a16_idx(16 * mt + lr, 32 * ks + 8 * lg)));
+      gst16(gb + GB_T + (size_t)(f * 64 + lane) * 16, lds_ld16(T16, a16_idx(16 * mt + lr, 32 * ks + 8 * lg)));
     }
   }
 }
@@ -2339,8 +2650,17 @@ DEVI void intra_process_fp(char* smem, int L, IntraRaw& cur, char* gb, float sca
 #define SMEM_FP SMEM_F2
 #endif
 static_assert(SMEM_FP <= 163840, "pipelined fused kernel must fit the 160 KB LDS");
-DEVI void fused_load_gb(IntraRaw& r, long t0, int L, const uint16_t* __restrict__ g,
-                        const uint16_t* __restrict__ beta, int H, int h, int w, int lg, int lr) {
+DEVI void fused_load_gb(
+    IntraRaw& r,
+    long t0,
+    int L,
+    const uint16_t* __restrict__ g,
+    const uint16_t* __restrict__ beta,
+    int H,
+    int h,
+    int w,
+    int lg,
+    int lr) {
 #pragma unroll
   for (int i = 0; i < 4; ++i) {
     int R = 16 * w + 4 * lg + i;
@@ -2355,8 +2675,17 @@ DEVI void fused_load_gb(IntraRaw& r, long t0, int L, const uint16_t* __restrict_
     r.b[i] = (uint32_t)beta[(size_t)t * H + h];
   }
 }
-DEVI void fused_load_qk(IntraRaw& r, long t0, int L, const uint16_t* __restrict__ q,
-                        const uint16_t* __restrict__ k, int H, int h, int w, int lg, int lr) {
+DEVI void fused_load_qk(
+    IntraRaw& r,
+    long t0,
+    int L,
+    const uint16_t* __restrict__ q,
+    const uint16_t* __restrict__ k,
+    int H,
+    int h,
+    int w,
+    int lg,
+    int lr) {
 #pragma unroll
   for (int i = 0; i < 4; ++i) {
     int R = 16 * w + 4 * lg + i;
@@ -2367,8 +2696,7 @@ DEVI void fused_load_qk(IntraRaw& r, long t0, int L, const uint16_t* __restrict_
   }
 }
 #if KDA_PIPE_GDMA
-DEVI void fused_dma_g(char* smem, const uint16_t* __restrict__ g, long t0, int L, int H, int h, int w,
-                      int lane) {
+DEVI void fused_dma_g(char* smem, const uint16_t* __restrict__ g, long t0, int L, int H, int h, int w, int lane) {
   const int u = lane & 15;
   uint32_t vo[4];
 #pragma unroll
@@ -2390,7 +2718,8 @@ DEVI void fused_dma_g(char* smem, const uint16_t* __restrict__ g, long t0, int L
 }
 DEVI void fused_g_from_lds(IntraRaw& r, const char* smem, int w, int lg, int lr) {
 #pragma unroll
-  for (int i = 0; i < 4; ++i) r.g[i] = *(const u32x4*)(smem + F_GRAW + 256 * (16 * w + 4 * lg + i) + 16 * lr);
+  for (int i = 0; i < 4; ++i)
+    r.g[i] = *(const u32x4*)(smem + F_GRAW + 256 * (16 * w + 4 * lg + i) + 16 * lr);
 }
 #endif
 struct FusedPF2 {
@@ -2414,7 +2743,9 @@ struct FusedPF2 {
     fused_load_gb(r, t0n, Ln, g, beta, H, h, w, lg, lr);
 #endif
   }
-  DEVM void qk(IntraRaw& r, int lg, int lr) const { fused_load_qk(r, t0n, Ln, q, k, H, h, w, lg, lr); }
+  DEVM void qk(IntraRaw& r, int lg, int lr) const {
+    fused_load_qk(r, t0n, Ln, q, k, H, h, w, lg, lr);
+  }
 };
 struct FusedPF2N {
   const uint16_t* g;
@@ -2432,13 +2763,26 @@ struct FusedPF2N {
   DEVM void qk(IntraRaw&, int, int) const {}
 };
 template <int PF>
-DEVI void kda_fused_body_pipe(char* smem, const uint16_t* __restrict__ q, const uint16_t* __restrict__ k,
-                              const uint16_t* __restrict__ v, const uint16_t* __restrict__ g,
-                              const uint16_t* __restrict__ beta, const float* __restrict__ A_log,
-                              const float* __restrict__ dt_bias, const float* __restrict__ h0,
-                              const long long* __restrict__ cu, uint16_t* __restrict__ o,
-                              float* __restrict__ ht, char* __restrict__ trash, int T, int H, int N, int has_cu,
-                              float scale, int bid) {
+DEVI void kda_fused_body_pipe(
+    char* smem,
+    const uint16_t* __restrict__ q,
+    const uint16_t* __restrict__ k,
+    const uint16_t* __restrict__ v,
+    const uint16_t* __restrict__ g,
+    const uint16_t* __restrict__ beta,
+    const float* __restrict__ A_log,
+    const float* __restrict__ dt_bias,
+    const float* __restrict__ h0,
+    const long long* __restrict__ cu,
+    uint16_t* __restrict__ o,
+    float* __restrict__ ht,
+    char* __restrict__ trash,
+    int T,
+    int H,
+    int N,
+    int has_cu,
+    float scale,
+    int bid) {
   const int wu = WAVE_U();
   const int p = bid / H;
   const int h = bid - p * H;
@@ -2602,16 +2946,24 @@ DEVI void kda_fused_body_pipe(char* smem, const uint16_t* __restrict__ q, const 
 #ifndef KDA_FORCED_SCRATCH_MAX
 #define KDA_FORCED_SCRATCH_MAX 64
 #endif
-#define KDA_INTRA_KERNEL(NAME, BOUND)                                                              \
-  extern "C" __global__ void BOUND NAME(                                                           \
-      const uint16_t* __restrict__ q, const uint16_t* __restrict__ k,                             \
-      const uint16_t* __restrict__ g, const uint16_t* __restrict__ beta,                          \
-      const float* __restrict__ A_log, const float* __restrict__ dt_bias,                         \
-      const long long* __restrict__ cu, char* __restrict__ gbuf, int T, int H, int N, float scale, \
-      int has_cu, int nwork) {                                                                     \
-    __shared__ __attribute__((aligned(16))) char smem[SMEM_A];                                     \
-    kda_intra_body_np(smem, q, k, g, beta, A_log, dt_bias, cu, gbuf, T, H, N, scale, has_cu,      \
-                      nwork);                                                                      \
+#define KDA_INTRA_KERNEL(NAME, BOUND)                                                                \
+  extern "C" __global__ void BOUND NAME(                                                             \
+      const uint16_t* __restrict__ q,                                                                \
+      const uint16_t* __restrict__ k,                                                                \
+      const uint16_t* __restrict__ g,                                                                \
+      const uint16_t* __restrict__ beta,                                                             \
+      const float* __restrict__ A_log,                                                               \
+      const float* __restrict__ dt_bias,                                                             \
+      const long long* __restrict__ cu,                                                              \
+      char* __restrict__ gbuf,                                                                       \
+      int T,                                                                                         \
+      int H,                                                                                         \
+      int N,                                                                                         \
+      float scale,                                                                                   \
+      int has_cu,                                                                                    \
+      int nwork) {                                                                                   \
+    __shared__ __attribute__((aligned(16))) char smem[SMEM_A];                                       \
+    kda_intra_body_np(smem, q, k, g, beta, A_log, dt_bias, cu, gbuf, T, H, N, scale, has_cu, nwork); \
   }
 KDA_INTRA_KERNEL(kda_intra_kernel, __launch_bounds__(256, 2))
 KDA_INTRA_KERNEL(kda_intra_kernel_o3, __launch_bounds__(256, 3))
@@ -2622,16 +2974,23 @@ KDA_INTRA_KERNEL(kda_intra_kernel_o3, __launch_bounds__(256, 3))
 // MFMAs keep the state in VGPRs: under the bare (256) bound the compiler chose accumulator-register
 // MFMAs and each chunk spent ~140 v_accvgpr moves converting the state and U to bf16 operands
 // (round 11 ISA).  The bare-bound build is kept as the fallback if the bounded one needs scratch.
-#define KDA_RECUR_KERNEL(NAME, BOUND, VS, SMEM)                                                    \
-  extern "C" __global__ void BOUND NAME(                                                           \
-      const char* __restrict__ gbuf, const uint16_t* __restrict__ v,                               \
-      const float* __restrict__ h0, const long long* __restrict__ cu, uint16_t* __restrict__ o,    \
-      float* __restrict__ ht, float* __restrict__ track_state,                                    \
-      const long long* __restrict__ track_chunk_idx, char* __restrict__ trash,                    \
-      int T, int H, int N, int has_cu) {                                                          \
-    __shared__ __attribute__((aligned(16))) char smem[SMEM];                                      \
-    kda_recur_body_t<VS, 1>(smem, gbuf, v, h0, cu, o, ht, track_state, track_chunk_idx, trash,    \
-                             T, H, N, has_cu, BID);                                                \
+#define KDA_RECUR_KERNEL(NAME, BOUND, VS, SMEM)                                                                       \
+  extern "C" __global__ void BOUND NAME(                                                                              \
+      const char* __restrict__ gbuf,                                                                                  \
+      const uint16_t* __restrict__ v,                                                                                 \
+      const float* __restrict__ h0,                                                                                   \
+      const long long* __restrict__ cu,                                                                               \
+      uint16_t* __restrict__ o,                                                                                       \
+      float* __restrict__ ht,                                                                                         \
+      float* __restrict__ track_state,                                                                                \
+      const long long* __restrict__ track_chunk_idx,                                                                  \
+      char* __restrict__ trash,                                                                                       \
+      int T,                                                                                                          \
+      int H,                                                                                                          \
+      int N,                                                                                                          \
+      int has_cu) {                                                                                                   \
+    __shared__ __attribute__((aligned(16))) char smem[SMEM];                                                          \
+    kda_recur_body_t<VS, 1>(smem, gbuf, v, h0, cu, o, ht, track_state, track_chunk_idx, trash, T, H, N, has_cu, BID); \
   }
 KDA_RECUR_KERNEL(kda_recur_kernel_vs2, __launch_bounds__(256, 2), 2, SMEM_B2)
 KDA_RECUR_KERNEL(kda_recur_kernel_vs2w, __launch_bounds__(256), 2, SMEM_B2)
@@ -2641,13 +3000,21 @@ KDA_RECUR_KERNEL(kda_recur_kernel_vs1, __launch_bounds__(512), 1, SMEM_B1)
 // ws2: value halves, 512 threads (two waves per SIMD, so at most 256 registers each, VGPR-form
 // MFMAs); ws4: value quarters (4 N H <= #CU), 256 threads, two-wave budget.  Each falls back to the
 // round-14 value-half kernel if it needs scratch.
-#define KDA_RECUR_WS_KERNEL(NAME, BOUND, VS, SMEM)                                                 \
-  extern "C" __global__ void BOUND NAME(                                                           \
-      const char* __restrict__ gbuf, const uint16_t* __restrict__ v,                               \
-      const float* __restrict__ h0, const long long* __restrict__ cu, uint16_t* __restrict__ o,    \
-      float* __restrict__ ht, char* __restrict__ trash, int T, int H, int N, int has_cu) {         \
-    __shared__ __attribute__((aligned(16))) char smem[SMEM];                                       \
-    kda_recur_body_ws<VS>(smem, gbuf, v, h0, cu, o, ht, trash, T, H, N, has_cu, BID, N);           \
+#define KDA_RECUR_WS_KERNEL(NAME, BOUND, VS, SMEM)                                       \
+  extern "C" __global__ void BOUND NAME(                                                 \
+      const char* __restrict__ gbuf,                                                     \
+      const uint16_t* __restrict__ v,                                                    \
+      const float* __restrict__ h0,                                                      \
+      const long long* __restrict__ cu,                                                  \
+      uint16_t* __restrict__ o,                                                          \
+      float* __restrict__ ht,                                                            \
+      char* __restrict__ trash,                                                          \
+      int T,                                                                             \
+      int H,                                                                             \
+      int N,                                                                             \
+      int has_cu) {                                                                      \
+    __shared__ __attribute__((aligned(16))) char smem[SMEM];                             \
+    kda_recur_body_ws<VS>(smem, gbuf, v, h0, cu, o, ht, trash, T, H, N, has_cu, BID, N); \
   }
 KDA_RECUR_WS_KERNEL(kda_recur_kernel_ws2, __launch_bounds__(512), 2, SMEM_B2)
 KDA_RECUR_WS_KERNEL(kda_recur_kernel_ws4, __launch_bounds__(256, 2), 4, SMEM_B4)
@@ -2655,9 +3022,19 @@ KDA_RECUR_WS_KERNEL(kda_recur_kernel_ws4, __launch_bounds__(256, 2), 4, SMEM_B4)
 // (round 16) multi-sequence layouts: whole-head 512-thread workgroups, plus value halves for the longest
 // sequence when its chunk chain is the critical path (kda_recur_body_mx); grid (N + 1) H
 extern "C" __global__ void __launch_bounds__(512) kda_recur_kernel_mx(
-    const char* __restrict__ gbuf, const uint16_t* __restrict__ v, const float* __restrict__ h0,
-    const long long* __restrict__ cu, uint16_t* __restrict__ o, float* __restrict__ ht,
-    char* __restrict__ trash, int T, int H, int N, int has_cu, int ncu, int force) {
+    const char* __restrict__ gbuf,
+    const uint16_t* __restrict__ v,
+    const float* __restrict__ h0,
+    const long long* __restrict__ cu,
+    uint16_t* __restrict__ o,
+    float* __restrict__ ht,
+    char* __restrict__ trash,
+    int T,
+    int H,
+    int N,
+    int has_cu,
+    int ncu,
+    int force) {
   __shared__ __attribute__((aligned(16))) char smem[SMEM_B1];
   kda_recur_body_mx(smem, gbuf, v, h0, cu, o, ht, trash, T, H, N, has_cu, ncu, force);
 }
@@ -2667,17 +3044,27 @@ extern "C" __global__ void __launch_bounds__(512) kda_recur_kernel_mx(
 // (<= 256 registers each).  Four builds that differ in where the A waves hold the next chunk's raw rows
 // (kda20_fb.inc): kda_fused_kernel (PF 1, registers from P2 on), _pk (PF 2, parked in LDS during the
 // recurrence step), _ls (PF 3, loaded at the top of the step), _np (PF 0, no prefetch).
-#define KDA_FUSED_KERNEL(NAME, PF)                                                                 \
-  extern "C" __global__ void __launch_bounds__(512) NAME(                                          \
-      const uint16_t* __restrict__ q, const uint16_t* __restrict__ k,                             \
-      const uint16_t* __restrict__ v, const uint16_t* __restrict__ g,                             \
-      const uint16_t* __restrict__ beta, const float* __restrict__ A_log,                         \
-      const float* __restrict__ dt_bias, const float* __restrict__ h0,                            \
-      const long long* __restrict__ cu, uint16_t* __restrict__ o, float* __restrict__ ht,         \
-      char* __restrict__ trash, int T, int H, int N, int has_cu, float scale) {                   \
-    __shared__ __attribute__((aligned(16))) char smem[SMEM_F2];                                    \
-    kda_fused_body<PF>(smem, q, k, v, g, beta, A_log, dt_bias, h0, cu, o, ht, trash, T, H, N,     \
-                       has_cu, scale, BID);                                                        \
+#define KDA_FUSED_KERNEL(NAME, PF)                                                                                 \
+  extern "C" __global__ void __launch_bounds__(512) NAME(                                                          \
+      const uint16_t* __restrict__ q,                                                                              \
+      const uint16_t* __restrict__ k,                                                                              \
+      const uint16_t* __restrict__ v,                                                                              \
+      const uint16_t* __restrict__ g,                                                                              \
+      const uint16_t* __restrict__ beta,                                                                           \
+      const float* __restrict__ A_log,                                                                             \
+      const float* __restrict__ dt_bias,                                                                           \
+      const float* __restrict__ h0,                                                                                \
+      const long long* __restrict__ cu,                                                                            \
+      uint16_t* __restrict__ o,                                                                                    \
+      float* __restrict__ ht,                                                                                      \
+      char* __restrict__ trash,                                                                                    \
+      int T,                                                                                                       \
+      int H,                                                                                                       \
+      int N,                                                                                                       \
+      int has_cu,                                                                                                  \
+      float scale) {                                                                                               \
+    __shared__ __attribute__((aligned(16))) char smem[SMEM_F2];                                                    \
+    kda_fused_body<PF>(smem, q, k, v, g, beta, A_log, dt_bias, h0, cu, o, ht, trash, T, H, N, has_cu, scale, BID); \
   }
 KDA_FUSED_KERNEL(kda_fused_kernel, 1)
 KDA_FUSED_KERNEL(kda_fused_kernel_pk, 2)
@@ -2687,17 +3074,28 @@ KDA_FUSED_KERNEL(kda_fused_kernel_np, 0)
 // (round 19) PIPELINED fused kernel (kda21_fp.inc / kda21_fb.inc): waves 0-3 run the intra phase of chunk
 // c + 1 while waves 4-7 run the recurrence step of chunk c (two 16-column state tiles each); same LDS layout
 // and block as round 18 (133920 B, one workgroup per CU), bit-identical results
-#define KDA_FUSEDP_KERNEL(NAME, PF)                                                                \
-  extern "C" __global__ void __launch_bounds__(512) NAME(                                          \
-      const uint16_t* __restrict__ q, const uint16_t* __restrict__ k,                             \
-      const uint16_t* __restrict__ v, const uint16_t* __restrict__ g,                             \
-      const uint16_t* __restrict__ beta, const float* __restrict__ A_log,                         \
-      const float* __restrict__ dt_bias, const float* __restrict__ h0,                            \
-      const long long* __restrict__ cu, uint16_t* __restrict__ o, float* __restrict__ ht,         \
-      char* __restrict__ trash, int T, int H, int N, int has_cu, float scale) {                   \
-    __shared__ __attribute__((aligned(16))) char smem[SMEM_FP];                                    \
-    kda_fused_body_pipe<PF>(smem, q, k, v, g, beta, A_log, dt_bias, h0, cu, o, ht, trash, T, H, N,  \
-                            has_cu, scale, BID);                                                   \
+#define KDA_FUSEDP_KERNEL(NAME, PF)                                                                 \
+  extern "C" __global__ void __launch_bounds__(512) NAME(                                           \
+      const uint16_t* __restrict__ q,                                                               \
+      const uint16_t* __restrict__ k,                                                               \
+      const uint16_t* __restrict__ v,                                                               \
+      const uint16_t* __restrict__ g,                                                               \
+      const uint16_t* __restrict__ beta,                                                            \
+      const float* __restrict__ A_log,                                                              \
+      const float* __restrict__ dt_bias,                                                            \
+      const float* __restrict__ h0,                                                                 \
+      const long long* __restrict__ cu,                                                             \
+      uint16_t* __restrict__ o,                                                                     \
+      float* __restrict__ ht,                                                                       \
+      char* __restrict__ trash,                                                                     \
+      int T,                                                                                        \
+      int H,                                                                                        \
+      int N,                                                                                        \
+      int has_cu,                                                                                   \
+      float scale) {                                                                                \
+    __shared__ __attribute__((aligned(16))) char smem[SMEM_FP];                                     \
+    kda_fused_body_pipe<PF>(                                                                        \
+        smem, q, k, v, g, beta, A_log, dt_bias, h0, cu, o, ht, trash, T, H, N, has_cu, scale, BID); \
   }
 // PF 1: raw rows of the next chunk in registers (g / b after the gate loop, q / k after P2); PF 0: loaded
 // at the top of each intra phase (fewer registers); the first one built without scratch is used
@@ -2726,10 +3124,14 @@ static int g_mode = 640;  // bit 9: pipelined fused kernel enabled, bit 7: round
 #endif
 static const void* kda_fused_ptr(int i) {
   switch (i) {
-    case 0: return reinterpret_cast<const void*>(kda_fused_kernel);
-    case 1: return reinterpret_cast<const void*>(kda_fused_kernel_pk);
-    case 2: return reinterpret_cast<const void*>(kda_fused_kernel_ls);
-    default: return reinterpret_cast<const void*>(kda_fused_kernel_np);
+    case 0:
+      return reinterpret_cast<const void*>(kda_fused_kernel);
+    case 1:
+      return reinterpret_cast<const void*>(kda_fused_kernel_pk);
+    case 2:
+      return reinterpret_cast<const void*>(kda_fused_kernel_ls);
+    default:
+      return reinterpret_cast<const void*>(kda_fused_kernel_np);
   }
 }
 static const char* const kda_fused_names[4] = {"PF1 registers", "PF2 parked", "PF3 step-load", "PF0 none"};
@@ -2752,21 +3154,17 @@ static void kda_select_variants() {
     g_sel_a = forced_ok ? 1 : 0;
   else
     g_sel_a = (forced_ok && occ_n < 3) ? 1 : 0;
-  const bool okb =
-      hipFuncGetAttributes(&bb, reinterpret_cast<const void*>(kda_recur_kernel_vs2)) == hipSuccess;
+  const bool okb = hipFuncGetAttributes(&bb, reinterpret_cast<const void*>(kda_recur_kernel_vs2)) == hipSuccess;
   g_sel_b = (okb && bb.localSizeBytes == 0) ? 0 : 1;
   hipFuncAttributes w2, w4;
   memset(&w2, 0, sizeof(w2));
   memset(&w4, 0, sizeof(w4));
-  const bool okw2 =
-      hipFuncGetAttributes(&w2, reinterpret_cast<const void*>(kda_recur_kernel_ws2)) == hipSuccess;
-  const bool okw4 =
-      hipFuncGetAttributes(&w4, reinterpret_cast<const void*>(kda_recur_kernel_ws4)) == hipSuccess;
+  const bool okw2 = hipFuncGetAttributes(&w2, reinterpret_cast<const void*>(kda_recur_kernel_ws2)) == hipSuccess;
+  const bool okw4 = hipFuncGetAttributes(&w4, reinterpret_cast<const void*>(kda_recur_kernel_ws4)) == hipSuccess;
   g_sel_ws = ((okw2 && w2.localSizeBytes == 0) ? 1 : 0) | ((okw4 && w4.localSizeBytes == 0) ? 2 : 0);
   hipFuncAttributes mx;
   memset(&mx, 0, sizeof(mx));
-  const bool okmx =
-      hipFuncGetAttributes(&mx, reinterpret_cast<const void*>(kda_recur_kernel_mx)) == hipSuccess;
+  const bool okmx = hipFuncGetAttributes(&mx, reinterpret_cast<const void*>(kda_recur_kernel_mx)) == hipSuccess;
   g_sel_mx = (okmx && mx.localSizeBytes == 0) ? 1 : 0;
   // first build without scratch in the order PF 1, 2, 3, 0
   g_sel_f = 0;
@@ -2776,44 +3174,98 @@ static void kda_select_variants() {
     memset(&fa, 0, sizeof(fa));
     const bool okf = hipFuncGetAttributes(&fa, kda_fused_ptr(i)) == hipSuccess;
     if (g_sel_f == 0 && okf && fa.localSizeBytes <= KDA_FUSED_SCRATCH_MAX) g_sel_f = i + 1;
-    if (false) fprintf(stderr, " %s regs=%d scratch=%zu lds=%zu ok=%d |", kda_fused_names[i], fa.numRegs,
-            (size_t)fa.localSizeBytes, (size_t)fa.sharedSizeBytes, (int)okf);
+    if (false)
+      fprintf(
+          stderr,
+          " %s regs=%d scratch=%zu lds=%zu ok=%d |",
+          kda_fused_names[i],
+          fa.numRegs,
+          (size_t)fa.localSizeBytes,
+          (size_t)fa.sharedSizeBytes,
+          (int)okf);
   }
   if (false) fprintf(stderr, " -> %s\n", g_sel_f ? kda_fused_names[g_sel_f - 1] : "NOT usable (two-kernel path)");
   {
     g_sel_fp = 0;
     if (false) fprintf(stderr, "SEL| fused PIPELINED (512):");
-    const void* fps[2] = {reinterpret_cast<const void*>(kda_fusedp_kernel),
-                          reinterpret_cast<const void*>(kda_fusedp_kernel_np)};
+    const void* fps[2] = {
+        reinterpret_cast<const void*>(kda_fusedp_kernel), reinterpret_cast<const void*>(kda_fusedp_kernel_np)};
     const char* const fpn[2] = {"PF1 registers", "PF0 none"};
     for (int i = 0; i < 2; ++i) {
       hipFuncAttributes fp;
       memset(&fp, 0, sizeof(fp));
       const bool okp = hipFuncGetAttributes(&fp, fps[i]) == hipSuccess;
       if (g_sel_fp == 0 && okp && fp.localSizeBytes <= KDA_FUSED_SCRATCH_MAX) g_sel_fp = i + 1;
-      if (false) fprintf(stderr, " %s regs=%d scratch=%zu lds=%zu ok=%d |", fpn[i], fp.numRegs, (size_t)fp.localSizeBytes,
-              (size_t)fp.sharedSizeBytes, (int)okp);
+      if (false)
+        fprintf(
+            stderr,
+            " %s regs=%d scratch=%zu lds=%zu ok=%d |",
+            fpn[i],
+            fp.numRegs,
+            (size_t)fp.localSizeBytes,
+            (size_t)fp.sharedSizeBytes,
+            (int)okp);
     }
     if (false) fprintf(stderr, " -> %s\n", g_sel_fp ? fpn[g_sel_fp - 1] : "NOT usable (round-18 fused kernel)");
   }
-  if (false) fprintf(stderr, "SEL| mx (512): regs=%d scratch=%zu ok=%d -> %s\n", mx.numRegs,
-          (size_t)mx.localSizeBytes, (int)okmx, g_sel_mx ? "split-capable multi-sequence kernel" : "vs1");
-  if (false) fprintf(stderr,
-          "SEL| intra (256,2): regs=%d scratch=%zu occ=%d | intra (256,3): regs=%d scratch=%zu "
-          "occ=%d | ok=%d -> %s | recur vs2 (256,2): regs=%d scratch=%zu ok=%d -> %s | ws2: regs=%d "
-          "scratch=%zu ok=%d | ws4: regs=%d scratch=%zu ok=%d -> ws mask %d\n",
-          an.numRegs, (size_t)an.localSizeBytes, occ_n, af.numRegs, (size_t)af.localSizeBytes, occ_f,
-          (int)ok, g_sel_a ? "forced" : "natural", bb.numRegs, (size_t)bb.localSizeBytes, (int)okb,
-          g_sel_b ? "bare-bound" : "two-wave", w2.numRegs, (size_t)w2.localSizeBytes, (int)okw2,
-          w4.numRegs, (size_t)w4.localSizeBytes, (int)okw4, g_sel_ws);
+  if (false)
+    fprintf(
+        stderr,
+        "SEL| mx (512): regs=%d scratch=%zu ok=%d -> %s\n",
+        mx.numRegs,
+        (size_t)mx.localSizeBytes,
+        (int)okmx,
+        g_sel_mx ? "split-capable multi-sequence kernel" : "vs1");
+  if (false)
+    fprintf(
+        stderr,
+        "SEL| intra (256,2): regs=%d scratch=%zu occ=%d | intra (256,3): regs=%d scratch=%zu "
+        "occ=%d | ok=%d -> %s | recur vs2 (256,2): regs=%d scratch=%zu ok=%d -> %s | ws2: regs=%d "
+        "scratch=%zu ok=%d | ws4: regs=%d scratch=%zu ok=%d -> ws mask %d\n",
+        an.numRegs,
+        (size_t)an.localSizeBytes,
+        occ_n,
+        af.numRegs,
+        (size_t)af.localSizeBytes,
+        occ_f,
+        (int)ok,
+        g_sel_a ? "forced" : "natural",
+        bb.numRegs,
+        (size_t)bb.localSizeBytes,
+        (int)okb,
+        g_sel_b ? "bare-bound" : "two-wave",
+        w2.numRegs,
+        (size_t)w2.localSizeBytes,
+        (int)okw2,
+        w4.numRegs,
+        (size_t)w4.localSizeBytes,
+        (int)okw4,
+        g_sel_ws);
   fflush(stderr);
 }
 
-void kda_fwd_launch(int64_t q, int64_t k, int64_t v, int64_t g, int64_t beta, int64_t A_log,
-                    int64_t dt_bias, int64_t h0, int64_t cu, int64_t o, int64_t ht,
-                    int64_t track_state, int64_t track_chunk_idx, int64_t gbuf,
-                    int64_t T, int64_t H, int64_t N, double scale, int64_t has_cu, int64_t ncu_in,
-                    int64_t stream) {
+void kda_fwd_launch(
+    int64_t q,
+    int64_t k,
+    int64_t v,
+    int64_t g,
+    int64_t beta,
+    int64_t A_log,
+    int64_t dt_bias,
+    int64_t h0,
+    int64_t cu,
+    int64_t o,
+    int64_t ht,
+    int64_t track_state,
+    int64_t track_chunk_idx,
+    int64_t gbuf,
+    int64_t T,
+    int64_t H,
+    int64_t N,
+    double scale,
+    int64_t has_cu,
+    int64_t ncu_in,
+    int64_t stream) {
   if (N <= 0 || H <= 0) return;
   kda_select_variants();
   const int ncu = ncu_in > 0 ? (int)ncu_in : 256;
@@ -2830,30 +3282,93 @@ void kda_fwd_launch(int64_t q, int64_t k, int64_t v, int64_t g, int64_t beta, in
   // one pair per CU (H64 mixed: ~49 x 7 us = ~0.34 ms); the round-18 kernel keeps its 2 #CU rule.
   if (!tracking && has_cu && N >= 2 && g_sel_fp && (g_mode & 512) && ((g_mode & 256) || N * H >= ncu)) {
     if (g_sel_fp == 1)
-      hipLaunchKernelGGL(kda_fusedp_kernel, dim3((unsigned)(N * H)), dim3(512), 0, (hipStream_t)stream,
-                         (const uint16_t*)q, (const uint16_t*)k, (const uint16_t*)v, (const uint16_t*)g,
-                         (const uint16_t*)beta, (const float*)A_log, (const float*)dt_bias,
-                         (const float*)h0, (const long long*)cu, (uint16_t*)o, (float*)ht, trash, (int)T,
-                         (int)H, (int)N, (int)has_cu, (float)scale);
+      hipLaunchKernelGGL(
+          kda_fusedp_kernel,
+          dim3((unsigned)(N * H)),
+          dim3(512),
+          0,
+          (hipStream_t)stream,
+          (const uint16_t*)q,
+          (const uint16_t*)k,
+          (const uint16_t*)v,
+          (const uint16_t*)g,
+          (const uint16_t*)beta,
+          (const float*)A_log,
+          (const float*)dt_bias,
+          (const float*)h0,
+          (const long long*)cu,
+          (uint16_t*)o,
+          (float*)ht,
+          trash,
+          (int)T,
+          (int)H,
+          (int)N,
+          (int)has_cu,
+          (float)scale);
     else
-      hipLaunchKernelGGL(kda_fusedp_kernel_np, dim3((unsigned)(N * H)), dim3(512), 0, (hipStream_t)stream,
-                         (const uint16_t*)q, (const uint16_t*)k, (const uint16_t*)v, (const uint16_t*)g,
-                         (const uint16_t*)beta, (const float*)A_log, (const float*)dt_bias,
-                         (const float*)h0, (const long long*)cu, (uint16_t*)o, (float*)ht, trash, (int)T,
-                         (int)H, (int)N, (int)has_cu, (float)scale);
+      hipLaunchKernelGGL(
+          kda_fusedp_kernel_np,
+          dim3((unsigned)(N * H)),
+          dim3(512),
+          0,
+          (hipStream_t)stream,
+          (const uint16_t*)q,
+          (const uint16_t*)k,
+          (const uint16_t*)v,
+          (const uint16_t*)g,
+          (const uint16_t*)beta,
+          (const float*)A_log,
+          (const float*)dt_bias,
+          (const float*)h0,
+          (const long long*)cu,
+          (uint16_t*)o,
+          (float*)ht,
+          trash,
+          (int)T,
+          (int)H,
+          (int)N,
+          (int)has_cu,
+          (float)scale);
     return;
   }
   if (!tracking && has_cu && N >= 2 && g_sel_f && (g_mode & 128) && ((g_mode & 256) || N * H >= 2 * ncu)) {
-#define KDA_LAUNCH_FUSED(KN)                                                                       \
-  hipLaunchKernelGGL(KN, dim3((unsigned)(N * H)), dim3(512), 0, (hipStream_t)stream, (const uint16_t*)q, \
-                     (const uint16_t*)k, (const uint16_t*)v, (const uint16_t*)g, (const uint16_t*)beta,  \
-                     (const float*)A_log, (const float*)dt_bias, (const float*)h0, (const long long*)cu, \
-                     (uint16_t*)o, (float*)ht, trash, (int)T, (int)H, (int)N, (int)has_cu, (float)scale)
+#define KDA_LAUNCH_FUSED(KN)   \
+  hipLaunchKernelGGL(          \
+      KN,                      \
+      dim3((unsigned)(N * H)), \
+      dim3(512),               \
+      0,                       \
+      (hipStream_t)stream,     \
+      (const uint16_t*)q,      \
+      (const uint16_t*)k,      \
+      (const uint16_t*)v,      \
+      (const uint16_t*)g,      \
+      (const uint16_t*)beta,   \
+      (const float*)A_log,     \
+      (const float*)dt_bias,   \
+      (const float*)h0,        \
+      (const long long*)cu,    \
+      (uint16_t*)o,            \
+      (float*)ht,              \
+      trash,                   \
+      (int)T,                  \
+      (int)H,                  \
+      (int)N,                  \
+      (int)has_cu,             \
+      (float)scale)
     switch (g_sel_f) {
-      case 1: KDA_LAUNCH_FUSED(kda_fused_kernel); break;
-      case 2: KDA_LAUNCH_FUSED(kda_fused_kernel_pk); break;
-      case 3: KDA_LAUNCH_FUSED(kda_fused_kernel_ls); break;
-      default: KDA_LAUNCH_FUSED(kda_fused_kernel_np); break;
+      case 1:
+        KDA_LAUNCH_FUSED(kda_fused_kernel);
+        break;
+      case 2:
+        KDA_LAUNCH_FUSED(kda_fused_kernel_pk);
+        break;
+      case 3:
+        KDA_LAUNCH_FUSED(kda_fused_kernel_ls);
+        break;
+      default:
+        KDA_LAUNCH_FUSED(kda_fused_kernel_np);
+        break;
     }
 #undef KDA_LAUNCH_FUSED
     return;
@@ -2861,73 +3376,189 @@ void kda_fwd_launch(int64_t q, int64_t k, int64_t v, int64_t g, int64_t beta, in
   if (nwork > 0) {
     const int nblk = nwork;
     if (g_sel_a == 1)
-      hipLaunchKernelGGL(kda_intra_kernel_o3, dim3((unsigned)nblk), dim3(256), 0,
-                         (hipStream_t)stream, (const uint16_t*)q, (const uint16_t*)k,
-                         (const uint16_t*)g, (const uint16_t*)beta, (const float*)A_log,
-                         (const float*)dt_bias, (const long long*)cu, (char*)gbuf, (int)T, (int)H,
-                         (int)N, (float)scale, (int)has_cu, nwork);
+      hipLaunchKernelGGL(
+          kda_intra_kernel_o3,
+          dim3((unsigned)nblk),
+          dim3(256),
+          0,
+          (hipStream_t)stream,
+          (const uint16_t*)q,
+          (const uint16_t*)k,
+          (const uint16_t*)g,
+          (const uint16_t*)beta,
+          (const float*)A_log,
+          (const float*)dt_bias,
+          (const long long*)cu,
+          (char*)gbuf,
+          (int)T,
+          (int)H,
+          (int)N,
+          (float)scale,
+          (int)has_cu,
+          nwork);
     else
-      hipLaunchKernelGGL(kda_intra_kernel, dim3((unsigned)nblk), dim3(256), 0, (hipStream_t)stream,
-                         (const uint16_t*)q, (const uint16_t*)k, (const uint16_t*)g,
-                         (const uint16_t*)beta, (const float*)A_log, (const float*)dt_bias,
-                         (const long long*)cu, (char*)gbuf, (int)T, (int)H, (int)N, (float)scale,
-                         (int)has_cu, nwork);
+      hipLaunchKernelGGL(
+          kda_intra_kernel,
+          dim3((unsigned)nblk),
+          dim3(256),
+          0,
+          (hipStream_t)stream,
+          (const uint16_t*)q,
+          (const uint16_t*)k,
+          (const uint16_t*)g,
+          (const uint16_t*)beta,
+          (const float*)A_log,
+          (const float*)dt_bias,
+          (const long long*)cu,
+          (char*)gbuf,
+          (int)T,
+          (int)H,
+          (int)N,
+          (float)scale,
+          (int)has_cu,
+          nwork);
   }
   // few (sequence, head) pairs: split the value columns over two workgroups (one chunk of loads
   // in flight); otherwise one 512-thread workgroup per (sequence, head), one chunk ahead (value
   // halves on the multi-sequence layouts measured 8-13% slower in round 11)
   if (!tracking && N * H * 4 <= ncu && (g_sel_ws & 2)) {
     // value quarters: 2 math + 2 loader waves per workgroup, the four parts of a head on one XCD
-    hipLaunchKernelGGL(kda_recur_kernel_ws4, dim3((unsigned)(N * H * 4)), dim3(256), 0,
-                       (hipStream_t)stream, (const char*)gbuf, (const uint16_t*)v, (const float*)h0,
-                       (const long long*)cu, (uint16_t*)o, (float*)ht, trash, (int)T, (int)H, (int)N,
-                       (int)has_cu);
+    hipLaunchKernelGGL(
+        kda_recur_kernel_ws4,
+        dim3((unsigned)(N * H * 4)),
+        dim3(256),
+        0,
+        (hipStream_t)stream,
+        (const char*)gbuf,
+        (const uint16_t*)v,
+        (const float*)h0,
+        (const long long*)cu,
+        (uint16_t*)o,
+        (float*)ht,
+        trash,
+        (int)T,
+        (int)H,
+        (int)N,
+        (int)has_cu);
   } else if (!tracking && N * H * 2 <= ncu && (g_sel_ws & 1)) {
     // value halves: 4 math + 4 loader waves per workgroup
-    hipLaunchKernelGGL(kda_recur_kernel_ws2, dim3((unsigned)(N * H * 2)), dim3(512), 0,
-                       (hipStream_t)stream, (const char*)gbuf, (const uint16_t*)v, (const float*)h0,
-                       (const long long*)cu, (uint16_t*)o, (float*)ht, trash, (int)T, (int)H, (int)N,
-                       (int)has_cu);
+    hipLaunchKernelGGL(
+        kda_recur_kernel_ws2,
+        dim3((unsigned)(N * H * 2)),
+        dim3(512),
+        0,
+        (hipStream_t)stream,
+        (const char*)gbuf,
+        (const uint16_t*)v,
+        (const float*)h0,
+        (const long long*)cu,
+        (uint16_t*)o,
+        (float*)ht,
+        trash,
+        (int)T,
+        (int)H,
+        (int)N,
+        (int)has_cu);
   } else if (N * H * 2 <= ncu) {
     if (g_sel_b == 0)
-      hipLaunchKernelGGL(kda_recur_kernel_vs2, dim3((unsigned)(N * H * 2)), dim3(256), 0,
-                         (hipStream_t)stream, (const char*)gbuf, (const uint16_t*)v,
-                         (const float*)h0, (const long long*)cu, (uint16_t*)o, (float*)ht,
-                         (float*)track_state, (const long long*)track_chunk_idx, trash,
-                         (int)T, (int)H, (int)N, (int)has_cu);
+      hipLaunchKernelGGL(
+          kda_recur_kernel_vs2,
+          dim3((unsigned)(N * H * 2)),
+          dim3(256),
+          0,
+          (hipStream_t)stream,
+          (const char*)gbuf,
+          (const uint16_t*)v,
+          (const float*)h0,
+          (const long long*)cu,
+          (uint16_t*)o,
+          (float*)ht,
+          (float*)track_state,
+          (const long long*)track_chunk_idx,
+          trash,
+          (int)T,
+          (int)H,
+          (int)N,
+          (int)has_cu);
     else
-      hipLaunchKernelGGL(kda_recur_kernel_vs2w, dim3((unsigned)(N * H * 2)), dim3(256), 0,
-                         (hipStream_t)stream, (const char*)gbuf, (const uint16_t*)v,
-                         (const float*)h0, (const long long*)cu, (uint16_t*)o, (float*)ht,
-                         (float*)track_state, (const long long*)track_chunk_idx, trash,
-                         (int)T, (int)H, (int)N, (int)has_cu);
+      hipLaunchKernelGGL(
+          kda_recur_kernel_vs2w,
+          dim3((unsigned)(N * H * 2)),
+          dim3(256),
+          0,
+          (hipStream_t)stream,
+          (const char*)gbuf,
+          (const uint16_t*)v,
+          (const float*)h0,
+          (const long long*)cu,
+          (uint16_t*)o,
+          (float*)ht,
+          (float*)track_state,
+          (const long long*)track_chunk_idx,
+          trash,
+          (int)T,
+          (int)H,
+          (int)N,
+          (int)has_cu);
   } else if (!tracking && g_sel_mx) {
-    hipLaunchKernelGGL(kda_recur_kernel_mx, dim3((unsigned)((N + 1) * H)), dim3(512), 0,
-                       (hipStream_t)stream, (const char*)gbuf, (const uint16_t*)v,
-                       (const float*)h0, (const long long*)cu, (uint16_t*)o, (float*)ht, trash,
-                       (int)T, (int)H, (int)N, (int)has_cu, ncu, 0);
+    hipLaunchKernelGGL(
+        kda_recur_kernel_mx,
+        dim3((unsigned)((N + 1) * H)),
+        dim3(512),
+        0,
+        (hipStream_t)stream,
+        (const char*)gbuf,
+        (const uint16_t*)v,
+        (const float*)h0,
+        (const long long*)cu,
+        (uint16_t*)o,
+        (float*)ht,
+        trash,
+        (int)T,
+        (int)H,
+        (int)N,
+        (int)has_cu,
+        ncu,
+        0);
   } else {
-    hipLaunchKernelGGL(kda_recur_kernel_vs1, dim3((unsigned)(N * H)), dim3(512), 0,
-                       (hipStream_t)stream, (const char*)gbuf, (const uint16_t*)v,
-                       (const float*)h0, (const long long*)cu, (uint16_t*)o, (float*)ht,
-                       (float*)track_state, (const long long*)track_chunk_idx, trash,
-                       (int)T, (int)H, (int)N, (int)has_cu);
+    hipLaunchKernelGGL(
+        kda_recur_kernel_vs1,
+        dim3((unsigned)(N * H)),
+        dim3(512),
+        0,
+        (hipStream_t)stream,
+        (const char*)gbuf,
+        (const uint16_t*)v,
+        (const float*)h0,
+        (const long long*)cu,
+        (uint16_t*)o,
+        (float*)ht,
+        (float*)track_state,
+        (const long long*)track_chunk_idx,
+        trash,
+        (int)T,
+        (int)H,
+        (int)N,
+        (int)has_cu);
   }
 }
 
-
-void kda_set_mode(int64_t mode) { g_mode = (int)(mode & 1023); }
+void kda_set_mode(int64_t mode) {
+  g_mode = (int)(mode & 1023);
+}
 void kda_mode_report() {
-  if (false) fprintf(stderr, "SEL| mode=%d: pipelined fused kernel %s; round-18 fused kernel %s%s\n", g_mode,
-          (g_sel_fp && (g_mode & 512)) ? (g_sel_fp == 1 ? "ENABLED (N >= 2 and N H >= #CU), build PF1 registers"
-                                                       : "ENABLED (N >= 2 and N H >= #CU), build PF0 none")
-                                         : "disabled",
-          (g_sel_f && (g_mode & 128)) ? "ENABLED (otherwise, N >= 2 and N H >= 2 #CU), build " : "disabled",
-          (g_sel_f && (g_mode & 128)) ? kda_fused_names[g_sel_f - 1] : "");
+  if (false)
+    fprintf(
+        stderr,
+        "SEL| mode=%d: pipelined fused kernel %s; round-18 fused kernel %s%s\n",
+        g_mode,
+        (g_sel_fp && (g_mode & 512)) ? (g_sel_fp == 1 ? "ENABLED (N >= 2 and N H >= #CU), build PF1 registers"
+                                                      : "ENABLED (N >= 2 and N H >= #CU), build PF0 none")
+                                     : "disabled",
+        (g_sel_f && (g_mode & 128)) ? "ENABLED (otherwise, N >= 2 and N H >= 2 #CU), build " : "disabled",
+        (g_sel_f && (g_mode & 128)) ? kda_fused_names[g_sel_f - 1] : "");
   fflush(stderr);
 }
-
-
 
 #include <ATen/hip/HIPContext.h>
 #include <torch/extension.h>
@@ -2947,53 +3578,53 @@ std::vector<torch::Tensor> kda_prefill_gfx950(
     double scale) {
   TORCH_CHECK(q.is_cuda(), "q must be on a GPU");
   TORCH_CHECK(q.scalar_type() == at::ScalarType::BFloat16, "q must be bf16");
-  TORCH_CHECK(k.sizes() == q.sizes() && v.sizes() == q.sizes() && g.sizes() == q.sizes(),
-              "q, k, v, and g must have the same shape");
-  TORCH_CHECK(q.dim() == 4 && q.size(0) == 1 && q.size(3) == 128,
-              "q must have shape [1, T, H, 128]");
-  TORCH_CHECK(beta.dim() == 3 && beta.size(0) == 1 && beta.size(1) == q.size(1) &&
-                  beta.size(2) == q.size(2),
-              "beta must have shape [1, T, H]");
-  TORCH_CHECK(initial_state.scalar_type() == at::ScalarType::Float,
-              "initial_state must be fp32");
-  TORCH_CHECK(initial_state.dim() == 4 && initial_state.size(1) == q.size(2) &&
-                  initial_state.size(2) == 128 && initial_state.size(3) == 128,
-              "initial_state must have shape [N, H, 128, 128]");
-  TORCH_CHECK(cu_seqlens.scalar_type() == at::ScalarType::Long && cu_seqlens.dim() == 1,
-              "cu_seqlens must be int64 and one-dimensional");
-  TORCH_CHECK(A_log.scalar_type() == at::ScalarType::Float && A_log.numel() == q.size(2),
-              "A_log must be fp32 with H elements");
-  TORCH_CHECK(dt_bias.scalar_type() == at::ScalarType::Float &&
-                  dt_bias.numel() == q.size(2) * 128,
-              "dt_bias must be fp32 with H*128 elements");
-  TORCH_CHECK(q.is_contiguous() && k.is_contiguous() && v.is_contiguous() &&
-                  g.is_contiguous() && beta.is_contiguous() &&
-                  A_log.is_contiguous() && dt_bias.is_contiguous() &&
-                  initial_state.is_contiguous() && cu_seqlens.is_contiguous(),
-              "all inputs must be contiguous");
+  TORCH_CHECK(
+      k.sizes() == q.sizes() && v.sizes() == q.sizes() && g.sizes() == q.sizes(),
+      "q, k, v, and g must have the same shape");
+  TORCH_CHECK(q.dim() == 4 && q.size(0) == 1 && q.size(3) == 128, "q must have shape [1, T, H, 128]");
+  TORCH_CHECK(
+      beta.dim() == 3 && beta.size(0) == 1 && beta.size(1) == q.size(1) && beta.size(2) == q.size(2),
+      "beta must have shape [1, T, H]");
+  TORCH_CHECK(initial_state.scalar_type() == at::ScalarType::Float, "initial_state must be fp32");
+  TORCH_CHECK(
+      initial_state.dim() == 4 && initial_state.size(1) == q.size(2) && initial_state.size(2) == 128 &&
+          initial_state.size(3) == 128,
+      "initial_state must have shape [N, H, 128, 128]");
+  TORCH_CHECK(
+      cu_seqlens.scalar_type() == at::ScalarType::Long && cu_seqlens.dim() == 1,
+      "cu_seqlens must be int64 and one-dimensional");
+  TORCH_CHECK(
+      A_log.scalar_type() == at::ScalarType::Float && A_log.numel() == q.size(2), "A_log must be fp32 with H elements");
+  TORCH_CHECK(
+      dt_bias.scalar_type() == at::ScalarType::Float && dt_bias.numel() == q.size(2) * 128,
+      "dt_bias must be fp32 with H*128 elements");
+  TORCH_CHECK(
+      q.is_contiguous() && k.is_contiguous() && v.is_contiguous() && g.is_contiguous() && beta.is_contiguous() &&
+          A_log.is_contiguous() && dt_bias.is_contiguous() && initial_state.is_contiguous() &&
+          cu_seqlens.is_contiguous(),
+      "all inputs must be contiguous");
 
   const int64_t T = q.size(1);
   const int64_t H = q.size(2);
   const int64_t N = initial_state.size(0);
   TORCH_CHECK(cu_seqlens.numel() == N + 1, "cu_seqlens must contain N+1 offsets");
   const bool tracking = track_state.numel() != 0;
-  TORCH_CHECK(tracking == (track_chunk_idx.numel() != 0),
-              "track_state and track_chunk_idx must be passed together");
+  TORCH_CHECK(tracking == (track_chunk_idx.numel() != 0), "track_state and track_chunk_idx must be passed together");
   if (tracking) {
-    TORCH_CHECK(track_state.scalar_type() == at::ScalarType::Float &&
-                    track_state.sizes() == initial_state.sizes() &&
-                    track_state.is_contiguous(),
-                "track_state must be contiguous fp32 [N, H, 128, 128]");
-    TORCH_CHECK(track_chunk_idx.scalar_type() == at::ScalarType::Long &&
-                    track_chunk_idx.numel() == N && track_chunk_idx.is_contiguous(),
-                "track_chunk_idx must be contiguous int64 [N]");
+    TORCH_CHECK(
+        track_state.scalar_type() == at::ScalarType::Float && track_state.sizes() == initial_state.sizes() &&
+            track_state.is_contiguous(),
+        "track_state must be contiguous fp32 [N, H, 128, 128]");
+    TORCH_CHECK(
+        track_chunk_idx.scalar_type() == at::ScalarType::Long && track_chunk_idx.numel() == N &&
+            track_chunk_idx.is_contiguous(),
+        "track_chunk_idx must be contiguous int64 [N]");
   }
 
   auto output = torch::empty_like(q);
   auto final_state = torch::empty_like(initial_state);
   const int64_t gbuf_bytes = (T / 64 + N) * H * 62208;
-  auto workspace = torch::empty(
-      {gbuf_bytes + 4096}, q.options().dtype(at::ScalarType::Byte));
+  auto workspace = torch::empty({gbuf_bytes + 4096}, q.options().dtype(at::ScalarType::Byte));
   const hipStream_t stream = at::hip::getCurrentHIPStream();
 
   kda_fwd_launch(
