@@ -446,7 +446,7 @@ def supports_mamba_cache_extra_buffer(view: Any, hf_config: Any) -> bool:
     if hf_config.architectures[0] in _MAMBA_EXTRA_BUFFER_ARCHS or (
         spec is not None and spec.support_mamba_cache_extra_buffer
     ):
-        return view.linear_attn_backend == "triton"
+        return view.linear_attn_backend in ("triton", "gfx950_kda")
     return False
 
 

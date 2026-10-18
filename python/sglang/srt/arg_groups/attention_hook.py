@@ -331,6 +331,25 @@ def handle_linear_attn_backend(server_args: Any):
             "(FlashKDA stays on prefill)."
         )
 
+    if decode == "gfx950_kda":
+        if cfg.linear_attn_decode_backend == "gfx950_kda":
+            raise ValueError(
+                "--linear-attn-decode-backend gfx950_kda is not supported: "
+                "gfx950_kda is prefill-only. Use "
+                "--linear-attn-prefill-backend gfx950_kda "
+                "(decode stays on triton)."
+            )
+        declare_resolution(
+            server_args,
+            "_handle_linear_attn_backend",
+            linear_attn_decode_backend="triton",
+        )
+        decode = "triton"
+        logger.info(
+            "gfx950_kda is prefill-only; using triton for KDA decode "
+            "(gfx950_kda stays on prefill)."
+        )
+
     if (
         decode == "flashinfer"
         and cfg.mamba_ssm_dtype != "bfloat16"
