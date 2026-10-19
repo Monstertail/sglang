@@ -834,14 +834,14 @@ def handle_page_major_kv_layout(server_args: Any):
     #   and rejects a non-unit innermost stride); cutedsl (KDA fused sigmoid-
     #   gating update is stride-safe) on KDA-hybrid models only.
     # - prefill: triton; flashinfer (GDN gathers/scatters contiguous state);
-    #   flashkda (the wrapper gathers/scatters a contiguous per-slot copy);
-    #   helion; cutedsl (kernel_h compiles h0/ht with dynamic
+    #   flashkda/gfx950_kda (the wrappers gather/scatter a contiguous per-slot
+    #   copy); helion; cutedsl (kernel_h compiles h0/ht with dynamic
     #   int64 strides), with the same KDA-only caveat.
     # - mamba (mamba2/short-conv state): triton only.
     # use_mla_backend() distinguishes the KDA-hybrid family (K3/KimiLinear
     # are MLA-hybrid) from GDN models (GQA-hybrid) for the KDA-only caveat.
     decode_allowed = {"triton", "flashinfer"}
-    prefill_allowed = {"triton", "flashkda", "flashinfer"}
+    prefill_allowed = {"triton", "flashkda", "flashinfer", "gfx950_kda"}
     if use_mla_backend(server_args):
         decode_allowed.update({"cutedsl", "helion"})
         prefill_allowed.update({"cutedsl", "helion"})

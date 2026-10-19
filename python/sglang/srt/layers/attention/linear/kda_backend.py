@@ -204,6 +204,18 @@ class KDAKernelDispatcher:
             )
 
             self.extend_kernel = FlashKDAKernel()
+        elif prefill_backend.is_gfx950_kda():
+            if (
+                not is_hip()
+                or torch.cuda.get_device_properties().gcnArchName.split(":", 1)[0]
+                != "gfx950"
+            ):
+                raise ValueError("gfx950_kda prefill backend requires a gfx950 GPU")
+            from sglang.srt.layers.attention.linear.kernels.kda_gfx950 import (
+                Gfx950KDAKernel,
+            )
+
+            self.extend_kernel = Gfx950KDAKernel()
         elif prefill_backend.is_flashinfer():
             if not is_cuda():
                 raise ValueError("KDA FlashInfer prefill backend requires CUDA")
@@ -262,8 +274,9 @@ class KDAKernelDispatcher:
         else:
             raise ValueError(
                 f"Unsupported KDA prefill backend: {prefill_backend}. "
-                "KDA supports 'triton', 'helion', 'flashinfer', 'flashkda', 'cutedsl', "
-                "'nvidia_kda', or 'ptx_kda' (cutedsl/nvidia_kda prefill need "
+                "KDA supports 'triton', 'helion', 'flashinfer', 'flashkda', "
+                "'gfx950_kda', 'cutedsl', 'nvidia_kda', or 'ptx_kda' "
+                "(gfx950_kda needs gfx950, cutedsl/nvidia_kda prefill need "
                 "SM100, ptx_kda SM100 or SM103)."
             )
 

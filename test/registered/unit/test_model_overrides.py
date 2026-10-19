@@ -2968,7 +2968,7 @@ class TestGoldenModelOverrides(_IsolatedPublish):
             )["mamba_radix_cache_strategy"],
             "extra_buffer",
         )
-        # extra-buffer support requires the triton linear-attn backend
+        # Extra-buffer support requires a backend with state snapshots.
         self.assertFalse(
             supports_mamba_cache_extra_buffer(
                 SimpleNamespace(linear_attn_backend="fla"),
@@ -2982,6 +2982,12 @@ class TestGoldenModelOverrides(_IsolatedPublish):
                     linear_attn_prefill_backend="flashinfer",
                 ),
                 SimpleNamespace(architectures=["Qwen3_5MoeForConditionalGeneration"]),
+            )
+        )
+        self.assertTrue(
+            supports_mamba_cache_extra_buffer(
+                SimpleNamespace(linear_attn_backend="gfx950_kda"),
+                SimpleNamespace(architectures=["KimiK3ForConditionalGeneration"]),
             )
         )
 

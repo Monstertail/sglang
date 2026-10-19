@@ -23,6 +23,7 @@ class LinearAttnKernelBackend(Enum):
     NV_CUTEDSL = "nv_cutedsl"
     FLASHINFER = "flashinfer"
     FLASHKDA = "flashkda"
+    GFX950_KDA = "gfx950_kda"
     NVIDIA_KDA = "nvidia_kda"
     PTX_KDA = "ptx_kda"
     HELION = "helion"
@@ -47,6 +48,9 @@ class LinearAttnKernelBackend(Enum):
 
     def is_flashkda(self):
         return self == LinearAttnKernelBackend.FLASHKDA
+
+    def is_gfx950_kda(self):
+        return self == LinearAttnKernelBackend.GFX950_KDA
 
     def is_nvidia_kda(self):
         return self == LinearAttnKernelBackend.NVIDIA_KDA
