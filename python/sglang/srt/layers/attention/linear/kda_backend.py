@@ -72,7 +72,8 @@ def _validate_flashinfer_kda_prefill(
 
 
 def flashinfer_kda_prefill_default(model_runner: ModelRunner) -> Optional[str]:
-    """Default safe-gate KDA prefill to FlashInfer on SM100/SM103."""
+    """Default safe-gate KDA prefill to FlashInfer on SM100/SM103 and to
+    gfx950_kda on gfx950."""
     from sglang.srt.configs.bailing_hybrid import BailingHybridConfig
     from sglang.srt.configs.hybrid_arch import hybrid_kda_config
 
@@ -89,10 +90,11 @@ def flashinfer_kda_prefill_default(model_runner: ModelRunner) -> Optional[str]:
         and not execution.deterministic.enable_deterministic_inference
         and not execution.overlap.enable_two_batch_overlap
         and execution.graph.cuda_graph_config.prefill.backend != CudaGraphBackend.FULL
-        and is_cuda()
-        and torch.cuda.get_device_capability() in ((10, 0), (10, 3))
     ):
-        return "flashinfer"
+        if is_cuda() and torch.cuda.get_device_capability() in ((10, 0), (10, 3)):
+            return "flashinfer"
+        if is_gfx95_supported():
+            return "gfx950_kda"
     return None
 
 
@@ -204,6 +206,12 @@ class KDAKernelDispatcher:
             )
 
             self.extend_kernel = FlashKDAKernel()
+        elif prefill_backend.is_gfx950_kda():
+            from sglang.srt.layers.attention.linear.kernels.kda_gfx950 import (
+                Gfx950KDAKernel,
+            )
+
+            self.extend_kernel = Gfx950KDAKernel()
         elif prefill_backend.is_flashinfer():
             if not is_cuda():
                 raise ValueError("KDA FlashInfer prefill backend requires CUDA")

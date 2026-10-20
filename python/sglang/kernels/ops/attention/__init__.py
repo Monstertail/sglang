@@ -134,7 +134,54 @@ def qwen38_qsa_sm121_varlen(
     )
 
 
-__all__ = ["can_use_kda_qwen38_qsa_sm121", "qwen38_qsa_sm121_varlen"]
+register_kernel(
+    KernelSpec(
+        op="attention.kda_prefill_gfx950",
+        backend=KernelBackend.KDA,
+        target="sglang.kernels.kda_kernels.kda_prefill_gfx950:kda_prefill_gfx950",
+        capabilities=frozenset({CapabilityRequirement.HIP}),
+    )
+)
+
+
+def kda_prefill_gfx950(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    g: torch.Tensor,
+    beta: torch.Tensor,
+    A_log: torch.Tensor,
+    dt_bias: torch.Tensor,
+    ssm_states: torch.Tensor,
+    cache_indices: torch.Tensor,
+    cu_seqlens: torch.Tensor,
+    scale: float,
+    track_state: torch.Tensor | None = None,
+    track_chunk_idx: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Kimi Delta Attention chunked prefill on gfx950; updates ssm_states in place."""
+    return get_kernel("attention.kda_prefill_gfx950", KernelBackend.KDA)(
+        q,
+        k,
+        v,
+        g,
+        beta,
+        A_log,
+        dt_bias,
+        ssm_states,
+        cache_indices,
+        cu_seqlens,
+        scale,
+        track_state,
+        track_chunk_idx,
+    )
+
+
+__all__ = [
+    "can_use_kda_qwen38_qsa_sm121",
+    "kda_prefill_gfx950",
+    "qwen38_qsa_sm121_varlen",
+]
 
 
 # Vendored linear-attention (flash-linear-attention port) kernels relocated
