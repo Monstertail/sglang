@@ -532,3 +532,11 @@ register_kernel(
         ),
     )
 )
+register_kernel(
+    KernelSpec(
+        op="attention.kda_decode_gfx950",
+        backend=KernelBackend.KDA,
+        target="sglang.kernels.kda_kernels.kda_decode_gfx950:kda_decode_gfx950",
+        capabilities=frozenset({CapabilityRequirement.HIP}),
+    )
+)
