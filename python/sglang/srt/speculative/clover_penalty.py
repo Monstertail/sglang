@@ -146,6 +146,19 @@ def _stop_tokens(req, vocab_size):
     return sorted(t for t in stops if t is not None and 0 <= t < vocab_size)
 
 
+def _add_causal_think_end_bias(
+    scores, candidates, *, token, bias, first_position, start, window
+):
+    # Verify row j follows drafts 1..j, so it is biased like an AR step unless
+    # one of those drafts already closed thinking; its own proposal does not count.
+    width = scores.shape[0]
+    positions = first_position + torch.arange(width, device=scores.device)
+    ramp = ((positions - start) / window).clamp(max=1) * (positions > start)
+    closes = (candidates[1:] == token).cumsum(0) > 0
+    open_rows = ~torch.cat((closes.new_zeros(1), closes))
+    scores[:, token] += (bias * ramp * open_rows).to(scores.dtype)
+
+
 def apply_clover_penalties(logits, reqs, visible_tokens, *, preview=False, state=None):
     """Modify [batch, width, vocab] logits in place; explicitly disabled penalties are a no-op.
 
@@ -230,14 +243,26 @@ def apply_clover_penalties(logits, reqs, visible_tokens, *, preview=False, state
         if think_bias and token is not None and token not in history:
             start = custom.get("dllm_think_end_start", 4096)
             window = custom.get("dllm_think_end_window", 4096)
-            # Only the first eligible position gets a bias. During verification
-            # an uncommitted draft </think> must not disable its own bias.
-            index = max(int(preview), start + 1 - first_position)
-            if index < width:
-                bias = think_bias * min((first_position + index - start) / window, 1)
-                if preview:
+            if preview:
+                # Only the first eligible draft slot is biased, so one parallel
+                # block cannot propose repeated close-thinking tokens.
+                index = max(1, start + 1 - first_position)
+                if index < width:
+                    bias = think_bias * min(
+                        (first_position + index - start) / window, 1
+                    )
                     bias = bias * ~(visible_tokens[row] == token).any()
-                scores[index, token] += bias
+                    scores[index, token] += bias
+            elif first_position + width - 1 > start:
+                _add_causal_think_end_bias(
+                    scores,
+                    visible_tokens[row],
+                    token=token,
+                    bias=think_bias,
+                    first_position=first_position,
+                    start=start,
+                    window=window,
+                )
         # Hard minimum wins over either positive bias. The EOS itself does not
         # count towards the required number of preceding response tokens.
         if sp.min_new_tokens and stops:
