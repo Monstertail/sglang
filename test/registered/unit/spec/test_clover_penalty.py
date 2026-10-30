@@ -168,7 +168,8 @@ class TestCloverPenalties(CustomTestCase):
         apply_clover_penalties(unbiased, [free], visible)
         self.assertFalse(unbiased[0, :, 6:].any())
 
-    def test_think_bias_first_position_and_committed_close(self):
+    def test_think_bias_first_draft_slot_causal_verify_and_committed_close(self):
+        """Preview biases one draft slot; verify biases each row like an AR step."""
         req = request(
             [1, 2],
             custom_params={
@@ -182,6 +183,9 @@ class TestCloverPenalties(CustomTestCase):
             (True, [2, 0, 0, 0], [0.0, 1.0, 0.0, 0.0]),
             (True, [2, 6, 0, 0], [0.0, 0.0, 0.0, 0.0]),
             (False, [2, 6, 3, 4], [1.0, 0.0, 0.0, 0.0]),
+            (False, [2, 3, 4, 5], [1.0, 2.0, 3.0, 4.0]),
+            # Row 1 proposes </think> and keeps its bias; later rows follow it.
+            (False, [2, 3, 6, 4], [1.0, 2.0, 0.0, 0.0]),
         ):
             logits = torch.zeros(1, 4, 8)
             apply_clover_penalties(
