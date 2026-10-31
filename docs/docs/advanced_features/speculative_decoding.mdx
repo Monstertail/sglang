@@ -684,7 +684,7 @@ python3 -m sglang.launch_server \
 
 Select the rule with `--speculative-clover-accept-rule`:
 
-- `threshold` is the default. It accepts a proposal when its target probability is at least `min(ratio, delta * exp(-entropy))` and greater than zero. Configure the ceiling and entropy-scaled factor with `--speculative-clover-accept-ratio` (default `1.0`) and `--speculative-clover-accept-delta` (default `0.6`).
+- `threshold` is the default. It is the typical-acceptance rule from [Medusa](https://arxiv.org/abs/2401.10774): a proposal is accepted when its target probability is at least `min(ratio, delta * exp(-entropy))` and greater than zero. Configure the ceiling and entropy-scaled factor with `--speculative-clover-accept-ratio` (default `1.0`) and `--speculative-clover-accept-delta` (default `0.6`, the value used by the reference Clover serving implementation). Because `delta * exp(-entropy)` never exceeds `delta`, the ratio only takes effect when it is set below `delta`; the default leaves it inactive.
 - `exact` accepts only proposals matching the penalty-adjusted target verify argmax, stopping at the first mismatch.
 
 <Warning>
