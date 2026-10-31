@@ -265,6 +265,40 @@ class TestCloverConfig(CustomTestCase):
             8,
         )
 
+    def test_request_row_holds_decode_reserve_at_context_limit(self):
+        """A full-context request's Clover reserve must stay inside its req_to_token row."""
+        from sglang.srt.mem_cache.allocation_sizing import (
+            get_req_to_token_extra_context_len,
+            page_aligned_decode_alloc_lens,
+        )
+        from sglang.srt.runtime_context import get_context, get_parallel
+
+        context_len, width = 1024, 32
+        req = SimpleNamespace(
+            kv=SimpleNamespace(
+                kv_allocated_len=context_len, kv_committed_len=context_len
+            )
+        )
+        for page_size in (1, 16):
+            with (
+                self.subTest(page_size=page_size),
+                (
+                    get_context().override_server_args(
+                        speculative_algorithm="CLOVER",
+                        speculative_num_draft_tokens=width,
+                        page_size=page_size,
+                    )
+                ),
+                get_parallel().override(attn_dcp_size=1),
+            ):
+                # CloverDraftInput inherits the DFlash 2 * width decode reserve.
+                _, ends, _ = page_aligned_decode_alloc_lens(
+                    [req], reserve=2 * width, page_size=page_size
+                )
+                self.assertLessEqual(
+                    ends[0], context_len + get_req_to_token_extra_context_len()
+                )
+
     def test_penalty_defaults_preserve_explicit_server_preferences(self):
         defaults = resolving_view(self.configure()).preferred_sampling_params
         self.assertEqual(
