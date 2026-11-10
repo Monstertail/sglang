@@ -166,6 +166,7 @@ class TestCloverAcceptance(CustomTestCase):
             {"dp_size": 2},
             {"tp_size": 2, "ep_size": 2},
             {"tp_size": 2, "ep_size": 2, "moe_runner_backend": "triton"},
+            {"tp_size": 2, "moe_a2a_backend": "deepep"},
         ):
             with self.subTest(**kwargs):
                 args = ServerArgs(
@@ -181,7 +182,10 @@ class TestCloverAcceptance(CustomTestCase):
                 cfg = resolving_view(args)
                 self.assertEqual(cfg.dp_size, kwargs.get("dp_size", 1))
                 self.assertEqual(cfg.ep_size, kwargs.get("ep_size", 1))
-                if cfg.ep_size > 1:
+                if cfg.moe_a2a_backend == "deepep":
+                    self.assertEqual(cfg.moe_runner_backend, "deep_gemm")
+                    self.assertEqual(cfg.deepep_mode, "normal")
+                elif cfg.ep_size > 1:
                     self.assertEqual(cfg.moe_runner_backend, "triton")
 
     def test_parallel_gate_keeps_unvalidated_dispatch_disabled(self):
@@ -192,7 +196,23 @@ class TestCloverAcceptance(CustomTestCase):
             ({"attn_dp_size": 2, "tp_size": 2}, "attention DP/CP"),
             ({"attn_cp_size": 2, "tp_size": 2}, "attention DP/CP"),
             ({"dcp_size": 2, "tp_size": 2}, "DCP"),
-            ({"moe_a2a_backend": "deepep", "tp_size": 2}, "moe-a2a-backend none"),
+            ({"moe_a2a_backend": "mooncake", "tp_size": 2}, "none or deepep"),
+            (
+                {
+                    "moe_a2a_backend": "deepep",
+                    "tp_size": 2,
+                    "moe_runner_backend": "triton",
+                },
+                "moe-runner-backend deep_gemm",
+            ),
+            (
+                {
+                    "moe_a2a_backend": "deepep",
+                    "tp_size": 2,
+                    "deepep_mode": "low_latency",
+                },
+                "deepep-mode normal",
+            ),
             (
                 {
                     "ep_size": 2,

@@ -151,6 +151,16 @@ class CloverWorker(BaseSpecWorker):
             mrope_positions=positions.unsqueeze(0).expand(3, -1),
         )
         plan.bind(fb, self.model_runner.kv_index_translator)
+        if batch.global_num_tokens is not None:
+            # Clover runs one attention-DP rank, so the preview's own count is global.
+            num_tokens = [bs * width]
+            fb.original_global_num_tokens_cpu = num_tokens
+            fb.global_num_tokens_cpu = num_tokens
+            fb.global_num_tokens_for_logprob_cpu = num_tokens
+            fb.global_num_tokens_gpu = torch.tensor(
+                num_tokens, dtype=torch.int64, device=self.device
+            )
+            fb.global_num_tokens_for_logprob_gpu = fb.global_num_tokens_gpu
         return fb
 
     def _draft(self, fb, reqs, *, penalty_state, penalties):
@@ -162,6 +172,11 @@ class CloverWorker(BaseSpecWorker):
                     logger.info("CLOVER draft CUDA graph replay active")
             else:
                 self.draft_backend.init_forward_metadata(fb)
+                if fb.global_num_tokens_cpu is not None:
+                    # Sizes the attention-TP gather buffers an a2a backend uses.
+                    self.model_runner._prepare_eager_forward_batch(fb)
+                    # Padding rows would break the per-block view of the logits.
+                    assert fb.input_ids.shape[0] == fb.batch_size * self.block_size
                 output = self.model_runner.model(
                     fb.input_ids,
                     fb.positions,
