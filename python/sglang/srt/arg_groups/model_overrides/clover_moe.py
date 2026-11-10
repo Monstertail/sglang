@@ -65,6 +65,15 @@ def _clover_overrides(server_args: Any, hf_config: Any) -> dict:
     # send whole prompts through its per-rank token cap.
     if use_deepep and cfg.deepep_mode not in ("auto", "normal"):
         raise ValueError("Clover DeepEP requires --deepep-mode auto or normal")
+    # The expert-distribution recorder has no gatherer for auto DeepEP mode.
+    if (
+        use_deepep
+        and cfg.deepep_mode == "auto"
+        and (cfg.enable_eplb or cfg.expert_distribution_recorder_mode is not None)
+    ):
+        raise ValueError(
+            "Clover EPLB or expert recording with DeepEP requires --deepep-mode normal"
+        )
     if (
         not use_deepep
         and cfg.ep_size > 1

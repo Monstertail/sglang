@@ -213,6 +213,10 @@ class TestCloverAcceptance(CustomTestCase):
                 "deepep-mode auto or normal",
             ),
             (
+                {"moe_a2a_backend": "deepep", "tp_size": 2, "enable_eplb": True},
+                "requires --deepep-mode normal",
+            ),
+            (
                 {
                     "ep_size": 2,
                     "tp_size": 2,
