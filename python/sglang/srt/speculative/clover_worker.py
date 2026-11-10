@@ -15,6 +15,7 @@ from sglang.srt.model_executor.forward_batch_info import (
     CaptureHiddenMode,
     ForwardBatch,
     ForwardMode,
+    enable_num_token_non_padded,
 )
 from sglang.srt.model_executor.forward_context import ForwardContext, forward_context
 from sglang.srt.runtime_context import get_exec, get_parallel, get_spec
@@ -151,6 +152,13 @@ class CloverWorker(BaseSpecWorker):
             mrope_positions=positions.unsqueeze(0).expand(3, -1),
         )
         plan.bind(fb, self.model_runner.kv_index_translator)
+        # Graph replay keeps the shared count buffer when the batch omits it, and
+        # DeepEP top-k masks every row past that stale bound (often a prefill's).
+        fb.global_num_token_non_padded_cpu = bs * width
+        if enable_num_token_non_padded():
+            fb.global_num_token_non_padded = torch.tensor(
+                bs * width, dtype=torch.int32, device=self.device
+            )
         if batch.global_num_tokens is not None:
             # Clover runs one attention-DP rank, so the preview's own count is global.
             num_tokens = [bs * width]
