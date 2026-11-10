@@ -60,10 +60,11 @@ def _clover_overrides(server_args: Any, hf_config: Any) -> dict:
         raise ValueError("Clover requires --moe-a2a-backend none or deepep")
     if use_deepep and cfg.moe_runner_backend not in ("auto", "deep_gemm"):
         raise ValueError("Clover DeepEP requires --moe-runner-backend deep_gemm")
-    # Low-latency dispatch caps tokens per rank and runs inside CUDA graphs;
-    # Clover's preview and verify are block extends, validated only in normal mode.
+    # Auto dispatches prefill in normal mode and the preview and verify steps,
+    # which run as decode batches, in low-latency mode; forcing low latency would
+    # send whole prompts through its per-rank token cap.
     if use_deepep and cfg.deepep_mode not in ("auto", "normal"):
-        raise ValueError("Clover DeepEP requires --deepep-mode normal")
+        raise ValueError("Clover DeepEP requires --deepep-mode auto or normal")
     if (
         not use_deepep
         and cfg.ep_size > 1
@@ -87,7 +88,6 @@ def _clover_overrides(server_args: Any, hf_config: Any) -> dict:
     }
     if use_deepep:
         overrides["moe_runner_backend"] = "deep_gemm"
-        overrides["deepep_mode"] = "normal"
     elif cfg.ep_size > 1:
         overrides["moe_runner_backend"] = "triton"
     return overrides

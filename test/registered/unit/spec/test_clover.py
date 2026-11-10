@@ -184,7 +184,6 @@ class TestCloverAcceptance(CustomTestCase):
                 self.assertEqual(cfg.ep_size, kwargs.get("ep_size", 1))
                 if cfg.moe_a2a_backend == "deepep":
                     self.assertEqual(cfg.moe_runner_backend, "deep_gemm")
-                    self.assertEqual(cfg.deepep_mode, "normal")
                 elif cfg.ep_size > 1:
                     self.assertEqual(cfg.moe_runner_backend, "triton")
 
@@ -211,7 +210,7 @@ class TestCloverAcceptance(CustomTestCase):
                     "tp_size": 2,
                     "deepep_mode": "low_latency",
                 },
-                "deepep-mode normal",
+                "deepep-mode auto or normal",
             ),
             (
                 {
@@ -283,6 +282,21 @@ class TestCloverConfig(CustomTestCase):
             ).speculative_num_draft_tokens,
             8,
         )
+
+    def test_deepep_dispatch_cap_covers_every_preview_row(self):
+        """Low-latency DeepEP fails at runtime if a rank's preview rows exceed its cap."""
+        from sglang.srt.environ import envs
+
+        width = CloverMoeConfig().block_size
+        fits = 128 * 8 // width
+        with envs.SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK.override(128):
+            self.configure(
+                moe_a2a_backend="deepep", tp_size=8, max_running_requests=fits
+            )
+            with self.assertRaisesRegex(ValueError, "DISPATCH_TOKENS_PER_RANK"):
+                self.configure(
+                    moe_a2a_backend="deepep", tp_size=8, max_running_requests=fits + 1
+                )
 
     def test_request_row_holds_decode_reserve_at_context_limit(self):
         """A full-context request's Clover reserve must stay inside its req_to_token row."""

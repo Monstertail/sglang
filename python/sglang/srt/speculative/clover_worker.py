@@ -161,6 +161,7 @@ class CloverWorker(BaseSpecWorker):
                 num_tokens, dtype=torch.int64, device=self.device
             )
             fb.global_num_tokens_for_logprob_gpu = fb.global_num_tokens_gpu
+            fb.can_run_decode_cuda_graph = batch.can_run_decode_cuda_graph
         return fb
 
     def _draft(self, fb, reqs, *, penalty_state, penalties):
