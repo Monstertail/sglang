@@ -256,6 +256,9 @@ from sglang.srt.managers.schedule_policy import (
     SchedulePolicy,
     mamba_prefill_chunk_grid,
 )
+from sglang.srt.managers.scheduler_components import (  # noqa: F401  registers its RPCs
+    forward_hot_reload,
+)
 from sglang.srt.managers.scheduler_components.batch_result_processor import (
     SchedulerBatchResultProcessor,
 )
@@ -390,6 +393,7 @@ from sglang.srt.observability.trace import process_tracing_init, trace_set_threa
 from sglang.srt.parser.reasoning_parser import ReasoningParser
 from sglang.srt.platforms import current_platform
 from sglang.srt.plugins import load_plugins
+from sglang.srt.plugins.rpc_registry import get_rpc
 from sglang.srt.rust_server.server import (
     RustServer,
     claim_sigterm_before_compiles,
@@ -6430,19 +6434,32 @@ class Scheduler(
 
         success = True
         exec = None
+        result = None
         try:
-            func = getattr(self, recv_req.method)
-            if recv_req.parameters is not None:
-                func(**recv_req.parameters)
+            handler = get_rpc(recv_req.method)
+            if handler is not None:
+                if hasattr(self, recv_req.method):
+                    raise ValueError(
+                        f"plugin RPC {recv_req.method!r} shadows a Scheduler attribute"
+                    )
+                func = partial(handler, self)
             else:
-                func()
+                func = getattr(self, recv_req.method)
+            if recv_req.parameters is not None:
+                result = func(**recv_req.parameters)
+            else:
+                result = func()
         except Exception as e:
             success = False
             exec = e
             logger.error(f"Failed to call rpc {recv_req.method}: {str(e)}")
 
         barrier(group=self.tp_group.cpu_group)
-        return RpcReqOutput(success=success, message="" if not exec else str(exec))
+        if exec is not None:
+            message = str(exec)
+        else:
+            message = result if isinstance(result, str) else ""
+        return RpcReqOutput(success=success, message=message)
 
     def handle_update_weight_version(
         self, recv_req: UpdateWeightVersionReqInput

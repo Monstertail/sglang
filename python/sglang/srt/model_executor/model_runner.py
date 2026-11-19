@@ -1741,6 +1741,21 @@ class ModelRunner:
             return
         self.init_decode_cuda_graph()
 
+    def has_prefill_cuda_graph(self) -> bool:
+        return self.prefill_cuda_graph_runner not in (None, self.eager_runner)
+
+    def recapture_cuda_graphs(self):
+        """Recapture the CUDA graphs that replay ``model.forward``, e.g. after it
+        changed."""
+        if self.has_prefill_cuda_graph():
+            # Full and breakable prefill graphs replay the decoder layers, not
+            # model.forward, and piecewise ones are compiled from it once.
+            raise NotImplementedError(
+                "cannot recapture prefill CUDA graphs; launch with "
+                "--disable-prefill-cuda-graph"
+            )
+        self.recapture_decode_cuda_graph()
+
     def ensure_decode_cuda_graphs(self, capture_bs: Optional[list[int]] = None):
         """Idempotently capture decode CUDA graphs after startup.
 

@@ -95,6 +95,10 @@ class ExecFeatures(msgspec.Struct):
         bool,
         "Enable users to pass custom logit processors to the server (disabled by default for security)",
     ] = False
+    enable_forward_hot_reload: A[
+        bool,
+        "Allow Engine.hot_reload_forward to swap the model's forward and recapture its CUDA graphs without a restart (disabled by default: it runs the given file in the server processes)",
+    ] = False
     enable_watermark: A[
         bool,
         "Enable Aaronson-Gumbel text watermarking.",

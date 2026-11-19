@@ -24,6 +24,8 @@ import atexit
 import copy
 import dataclasses
 import gc
+import hashlib
+import json
 import logging
 import multiprocessing as mp
 import os
@@ -1934,18 +1936,40 @@ class Engine(EngineScoreMixin, EngineBase):
     Execute an RPC call on all scheduler processes.
     """
 
-    def collective_rpc(self, method: str, **kwargs):
+    def collective_rpc(self, method: str, **kwargs) -> str:
         obj = RpcReqInput(method=method, parameters=kwargs)
         sock_send(self.send_to_rpc, obj)
         recv_req = sock_recv(self.send_to_rpc, flags=zmq.BLOCKY)
         assert isinstance(recv_req, RpcReqOutput)
         assert recv_req.success, recv_req.message
+        return recv_req.message
 
     def save_remote_model(self, **kwargs):
         self.collective_rpc("save_remote_model", **kwargs)
 
     def save_sharded_model(self, **kwargs):
         self.collective_rpc("save_sharded_model", **kwargs)
+
+    def hot_reload_forward(self, path: str, sha256: Optional[str] = None) -> dict:
+        """Serve the forward that ``make_forward(original_forward)`` in ``path`` builds.
+
+        Requires ``--enable-forward-hot-reload`` and an idle engine. Every
+        scheduler loads the file, swaps the model's forward and recaptures its
+        CUDA graphs; the KV cache is flushed. ``sha256`` pins the file content
+        (computed here when omitted). Returns the active variant and the
+        recapture time.
+        """
+        path = os.path.abspath(path)
+        if sha256 is None:
+            with open(path, "rb") as f:
+                sha256 = hashlib.sha256(f.read()).hexdigest()
+        return json.loads(
+            self.collective_rpc("hot_reload_forward", path=path, sha256=sha256)
+        )
+
+    def restore_forward(self) -> dict:
+        """Serve the model's original forward again (see ``hot_reload_forward``)."""
+        return json.loads(self.collective_rpc("restore_forward"))
 
     # score() and async_score() are provided by EngineScoreMixin
 
