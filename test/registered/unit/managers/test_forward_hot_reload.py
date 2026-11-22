@@ -38,6 +38,11 @@ CANDIDATES = {
         "    return orig\n"
     ),
     "not_callable": "def make_forward(orig):\n    return 3\n",
+    "tf32_not_callable": (
+        "import torch\n"
+        "torch.backends.cuda.matmul.allow_tf32 = True\n"
+        "def make_forward(orig):\n    return 3\n"
+    ),
 }
 
 
@@ -151,6 +156,25 @@ def rank_main(rank, root):
                     load(scheduler, "plain")
             finally:
                 torch.backends.cuda.matmul.allow_tf32 = False
+
+            # The same candidate refused at build, or with its capture rejected
+            # on one rank, has still run: the original forward keeps serving in
+            # the state it left, so the engine stops.
+            for name, rejecting_rank in (("tf32_not_callable", None), ("tf32", 1)):
+                try:
+                    runner, scheduler = engine()
+                    runner.fail_once = rank == rejecting_rank
+                    with case.assertRaisesRegex(
+                        SystemExit,
+                        "kept the original forward after a .* but "
+                        ".*tf32_matmul False -> True",
+                    ):
+                        load(scheduler, name)
+                    assert runner.forward_hot_reload_slot.broken
+                    assert runner.forward_hot_reload_slot.active == fhr.ORIGINAL
+                    assert runner.replay(x).item() == 6
+                finally:
+                    torch.backends.cuda.matmul.allow_tf32 = False
 
             # A factory that replaced a weight's storage stops the engine.
             runner, scheduler = engine()

@@ -18,7 +18,7 @@ restoring the original callable cannot undo:
 
 - a ``make_forward`` that moves, reshapes or replaces a parameter;
 - process state (see ``ProcessStateGuard``) that differs once the original
-  forward is back.
+  forward is back, whether it was restored or kept after a refused candidate.
 """
 
 import hashlib
@@ -122,6 +122,16 @@ def _check_layout(runner, slot):
         raise RuntimeError("parameter storage changed")
 
 
+def _verify_original(scheduler, slot, what: str) -> None:
+    # A candidate's module code has run even when the candidate was refused, so
+    # the original forward must not go on serving in a state it left behind.
+    try:
+        _all_ranks(scheduler, slot.guard.verify)
+    except RuntimeError as exc:
+        slot.broken = True
+        raise SystemExit(f"{what} but {exc}") from exc
+
+
 def _swap(scheduler, runner, slot, forward, name) -> float:
     def drain():
         if not scheduler.flush_cache():
@@ -156,6 +166,10 @@ def _swap(scheduler, runner, slot, forward, name) -> float:
                 f"forward swap and rollback both failed: {rollback}"
             ) from rejected
         slot.broken = False
+        if previous_name == ORIGINAL:
+            _verify_original(
+                scheduler, slot, "kept the original forward after a rejected capture"
+            )
         raise RuntimeError(f"kept the previous forward: {rejected}") from rejected
     slot.broken = False
     slot.active = name
@@ -191,6 +205,10 @@ def hot_reload_forward(scheduler, *, path: str, sha256: str) -> str:
     except Exception:
         if sha256 != slot.active:
             sys.modules.pop(_module_name(sha256), None)
+        if slot.active == ORIGINAL:
+            _verify_original(
+                scheduler, slot, "kept the original forward after a refused candidate"
+            )
         raise
     finally:
         try:
@@ -210,11 +228,7 @@ def restore_forward(scheduler) -> str:
     capture_s = None
     if slot.active != ORIGINAL:
         capture_s = _swap(scheduler, runner, slot, slot.original, ORIGINAL)
-    try:
-        _all_ranks(scheduler, slot.guard.verify)
-    except RuntimeError as exc:
-        slot.broken = True
-        raise SystemExit(f"original forward restored but {exc}") from exc
+    _verify_original(scheduler, slot, "original forward restored")
     moved = slot.guard.moved()
     return json.dumps(
         {
