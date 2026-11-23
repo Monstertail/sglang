@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sglang-forward-hot-reload"
+version = "0.1.0"
+description = "Swap a running SGLang engine's model forward and recapture its decode CUDA graphs, as an SGLang general plugin"
+requires-python = ">=3.10"
+
+[project.entry-points."sglang.srt.plugins"]
+forward_hot_reload = "sglang_forward_hot_reload:register"
+
+[tool.setuptools]
+packages = ["sglang_forward_hot_reload"]
