@@ -258,6 +258,7 @@ from sglang.srt.managers.schedule_policy import (
 )
 from sglang.srt.managers.scheduler_components import (  # noqa: F401  registers its RPCs
     forward_hot_reload,
+    kernel_profiles,
 )
 from sglang.srt.managers.scheduler_components.batch_result_processor import (
     SchedulerBatchResultProcessor,
@@ -813,6 +814,9 @@ class Scheduler(
         self.init_internal_state()
 
         self.init_rank_consensus_checker()
+
+        if get_exec().features.kernel_profiles:
+            kernel_profiles.admit(self)
 
         self.is_initializing = False
         self.init_startup_timing_summary()

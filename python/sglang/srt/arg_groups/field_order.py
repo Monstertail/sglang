@@ -574,5 +574,6 @@ POSITIONAL_FIELD_ORDER = (
     "enable_token_space_processor",
     "indexer_kv_cache_dtype",
     "enable_forward_hot_reload",
+    "kernel_profiles",
 )
 # fmt: on

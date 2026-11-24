@@ -1971,6 +1971,22 @@ class Engine(EngineScoreMixin, EngineBase):
         """Serve the model's original forward again (see ``hot_reload_forward``)."""
         return json.loads(self.collective_rpc("restore_forward"))
 
+    def switch_kernel_profile(self, name: str) -> dict:
+        """Serve the kernels of profile ``name`` from ``--kernel-profiles``
+        (``original`` for the targets' own entry points).
+
+        Requires an idle engine. Every scheduler rebinds the profile's kernel
+        entry points and recaptures its CUDA graphs; the KV cache is flushed and
+        a failed capture keeps the previous profile. Returns the active and
+        previous profile, the recapture and total time, and the least free device
+        memory across ranks before and after.
+        """
+        return json.loads(self.collective_rpc("switch_kernel_profile", name=name))
+
+    def get_kernel_profiles(self) -> dict:
+        """The active kernel profile and each profile's admission result."""
+        return json.loads(self.collective_rpc("list_kernel_profiles"))
+
     # score() and async_score() are provided by EngineScoreMixin
 
 

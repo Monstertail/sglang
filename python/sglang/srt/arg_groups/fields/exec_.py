@@ -99,6 +99,10 @@ class ExecFeatures(msgspec.Struct):
         bool,
         "Allow Engine.hot_reload_forward to swap the model's forward and recapture its CUDA graphs without a restart (disabled by default: it runs the given file in the server processes)",
     ] = False
+    kernel_profiles: A[
+        Optional[str],
+        "JSON file of named kernel profiles (sets of kernel entry points to rebind) that Engine.switch_kernel_profile moves the server among without a restart; each is imported, warmed up and checked at startup",
+    ] = None
     enable_watermark: A[
         bool,
         "Enable Aaronson-Gumbel text watermarking.",
