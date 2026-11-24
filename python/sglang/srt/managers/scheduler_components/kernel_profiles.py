@@ -57,6 +57,15 @@ be paused with its running requests retracted (``pause_generation`` with mode
 ``retract``), so no request holds KV while the graphs are recaptured, and the KV
 cache is kept, since an admitted profile computes what the original does.
 ``Engine.async_switch_mode`` does the pause and the resume.
+
+``"resident_graphs": true`` captures every available profile's decode graphs at
+admission and keeps them (``graph_banks``), so a switch rebinds the targets and
+selects the profile's graphs between two scheduler steps: no recapture, no pause,
+no idle engine. A profile whose graphs cannot be captured, or whose graphs' logits
+on the capture inputs differ from the original's beyond ``"bank_check"``, is
+unavailable. If capturing one replaces state the graphs captured before read, or
+changes what the original graphs compute, the engine drops the banks, recaptures
+its original graphs and switches by recapturing.
 """
 
 import importlib
@@ -73,6 +82,7 @@ from sglang.srt.managers.scheduler_components.forward_hot_reload import (
     _all_ranks,
     parameter_layout,
 )
+from sglang.srt.model_executor import graph_banks
 from sglang.srt.model_executor.process_state_guard import ProcessStateGuard, drift
 from sglang.srt.plugins.rpc_registry import register_rpc
 from sglang.srt.runtime_context import get_exec, get_parallel
@@ -82,6 +92,8 @@ logger = logging.getLogger(__name__)
 ORIGINAL = "original"
 DEFAULT_MARGIN_GB = 1.0
 GRAPH_PHASES = ("decode", "target_verify")
+# The original graphs replayed again; a profile's graphs against the original's.
+BANK_CHECK = {"stable_rtol": 1e-2, "stable_argmax": 0.02, "rtol": 5e-2, "argmax": 0.1}
 
 
 def _chunk(value):
@@ -143,6 +155,7 @@ class Profile:
         self.available = False
         self.reason: Optional[str] = None
         self.admit_s: Optional[float] = None
+        self.bank: Optional[dict] = None
 
     def targets(self) -> List[str]:
         return [b["target"] for b in self.spec.get("bindings", [])]
@@ -212,6 +225,8 @@ class KernelProfiles:
         self.startup_settings: Dict[str, object] = {}
         # None after a direct kernel switch, which no mode describes.
         self.active_mode: Optional[str] = None
+        self.banks: Optional[graph_banks.GraphBanks] = None
+        self.banks_reason: Optional[str] = None
 
     def mode_available(self, name: str) -> Tuple[bool, Optional[str]]:
         mode = self.modes.get(name)
@@ -238,12 +253,18 @@ class KernelProfiles:
                 for name, mode in self.modes.items()
             },
             "broken": self.broken,
+            "resident": {
+                "on": self.banks is not None,
+                "reason": self.banks_reason,
+                **(self.banks.describe() if self.banks is not None else {}),
+            },
             "profiles": {
                 name: {
                     "available": p.available,
                     "reason": p.reason,
                     "targets": p.targets(),
                     "admit_s": p.admit_s,
+                    "bank": p.bank,
                 }
                 for name, p in self.profiles.items()
             },
@@ -316,15 +337,125 @@ def admit(scheduler, path: Optional[str] = None) -> KernelProfiles:
                 f"admitting kernel profile {name!r} moved process state: "
                 + "; ".join(moved["flags"] + moved["path"])
             )
+    if spec.get("resident_graphs"):
+        _admit_banks(scheduler, runner, state)
+        moved = drift(before, guard.now())
+        if moved["flags"] or moved["path"]:
+            raise RuntimeError(
+                "capturing the kernel profiles' graphs moved process state: "
+                + "; ".join(moved["flags"] + moved["path"])
+            )
     runner.kernel_profiles = state
     logger.info(
         "kernel profiles: "
         + ", ".join(
-            f"{n} ({'ready' if p.available else 'unavailable'})"
+            f"{n} ({'resident' if p.bank else 'ready' if p.available else 'unavailable'})"
             for n, p in state.profiles.items()
         )
     )
     return state
+
+
+def _bank_room(runner, state: KernelProfiles) -> str:
+    usage = getattr(runner, "graph_memory_usage", None) or {}
+    need = sum(float(usage.get(p, 0.0)) for p in GRAPH_PHASES) + state.margin_gb
+    free_gb = torch.cuda.mem_get_info()[0] / 2**30
+    if free_gb < need:
+        raise RuntimeError(
+            f"{free_gb:.2f} GB free; its graphs need {need:.2f} GB "
+            f"(the original graphs' and a {state.margin_gb} GB margin)"
+        )
+    return "ok"
+
+
+def _admit_banks(scheduler, runner, state: KernelProfiles) -> None:
+    """Capture and keep every available profile's decode graphs, on every rank in
+    the same order: each capture and replay runs collectives."""
+    check = {**BANK_CHECK, **(state.spec.get("bank_check") or {})}
+
+    def support():
+        reason = graph_banks.unsupported(runner)
+        if reason:
+            raise RuntimeError(reason)
+        return "ok"
+
+    try:
+        _all_ranks(scheduler, support)
+    except RuntimeError as exc:
+        state.banks_reason = str(exc)[:500]
+        logger.warning(f"resident graphs are off: {state.banks_reason}")
+        return
+    banks = graph_banks.GraphBanks(runner.decode_cuda_graph_runner)
+    banks.adopt(ORIGINAL)
+    try:
+        reference = banks.fingerprints(ORIGINAL)
+    except Exception as exc:
+        state.banks_reason = f"replaying the original graphs failed: {exc}"[:500]
+        logger.warning(f"resident graphs are off: {state.banks_reason}")
+        return
+
+    def off(why: str) -> None:
+        # Graphs captured earlier may read state that nothing updates any more.
+        banks.drop()
+        runner.recapture_cuda_graphs()
+        torch.cuda.synchronize()
+        for profile in state.profiles.values():
+            profile.bank = None
+        state.banks_reason = why[:500]
+        logger.warning(f"resident graphs are off: {state.banks_reason}")
+
+    for name, profile in state.profiles.items():
+        if not profile.available:
+            continue
+        try:
+            _all_ranks(scheduler, lambda: _bank_room(runner, state))
+            state.bind(name)
+            try:
+                error, moved = banks.capture(name)
+            finally:
+                state.bind(ORIGINAL)
+            if error is None:
+                try:
+                    _check_layout(runner, state)
+                except RuntimeError as exc:
+                    error = str(exc)
+            reports = _gather(scheduler, (error, moved))
+            moved = sorted({path for _, paths in reports for path in paths})
+            if moved:
+                return off(f"capturing {name!r} replaced captured state: {moved[:6]}")
+            errors = [e for e, _ in reports if e]
+            if errors:
+                raise RuntimeError(errors[0])
+            again = graph_banks.compare(
+                reference,
+                banks.fingerprints(ORIGINAL),
+                rtol=check["stable_rtol"],
+                mismatch=check["stable_argmax"],
+            )
+            changed = [c for c in _gather(scheduler, again) if c]
+            if changed:
+                return off(f"capturing {name!r} changed the original graphs' logits: {changed[0]}")
+            differs = graph_banks.compare(
+                reference, banks.fingerprints(name), rtol=check["rtol"], mismatch=check["argmax"]
+            )
+            differs = [d for d in _gather(scheduler, differs) if d]
+            if differs:
+                raise RuntimeError(f"its graphs' logits are not the original's: {differs[0]}")
+        except Exception as exc:
+            if name in banks.banks:
+                banks.discard(name)
+            profile.available = False
+            profile.replacements.clear()
+            profile.reason = f"graph bank: {exc}"[:500]
+            logger.warning(f"kernel profile {name!r} is unavailable: {profile.reason}")
+            continue
+        bank = banks.banks[name]
+        profile.bank = {
+            "graphs": len(bank.graphs),
+            "capture_s": round(max(_gather(scheduler, bank.capture_s)), 2),
+            "memory_gb": round(max(_gather(scheduler, bank.memory_gb)), 2),
+        }
+    state.banks = banks
 
 
 def _paused(scheduler) -> bool:
@@ -337,7 +468,9 @@ def _holds_kv(scheduler) -> bool:
     return not scheduler.is_fully_idle(ignore_waiting=True)
 
 
-def _preflight(scheduler, runner, state: KernelProfiles, name: str, live: bool = False) -> str:
+def _preflight(
+    scheduler, runner, state: KernelProfiles, name: str, live: bool = False, resident: bool = False
+) -> str:
     parallel = get_parallel()
     if parallel.attn_dp_size > 1 or parallel.pp_size > 1:
         raise RuntimeError("kernel profiles support tensor parallelism only")
@@ -355,6 +488,9 @@ def _preflight(scheduler, runner, state: KernelProfiles, name: str, live: bool =
             raise ValueError(f"no kernel profile {name!r}")
         if not profile.available:
             raise ValueError(f"kernel profile {name!r} is unavailable: {profile.reason}")
+    if resident:
+        # Its graphs are captured: the switch is a reference swap between steps.
+        return state.active
     if live:
         if not _paused(scheduler):
             raise RuntimeError("a live switch needs generation paused")
@@ -435,7 +571,53 @@ def _rebind(scheduler, runner, state: KernelProfiles, name: str, live: bool = Fa
     return capture_s
 
 
+def _switch_resident(scheduler, runner, state: KernelProfiles, name: str, live: bool) -> dict:
+    started = time.perf_counter()
+
+    def preflight():
+        previous = _preflight(scheduler, runner, state, name, resident=True)
+        if previous == ORIGINAL and name != ORIGINAL:
+            state.guard.reference()
+        return previous
+
+    previous = _all_ranks(scheduler, preflight)
+
+    def select(target):
+        def flip():
+            state.bind(target)
+            state.banks.activate(target)
+            return target
+
+        return flip
+
+    if name != previous:
+        try:
+            _all_ranks(scheduler, select(name))
+        except Exception as rejected:
+            try:
+                _all_ranks(scheduler, select(previous))
+            except Exception as rollback:
+                state.broken = True
+                raise SystemExit(
+                    f"kernel profile switch and rollback both failed: {rollback}"
+                ) from rejected
+            raise RuntimeError(f"kept kernel profile {previous!r}: {rejected}") from rejected
+        state.active = name
+    if name == ORIGINAL and previous != ORIGINAL:
+        _verify_original(scheduler, state, "original kernels restored")
+    return {
+        "active": name,
+        "previous": previous,
+        "live": live,
+        "resident": True,
+        "capture_s": None,
+        "total_s": time.perf_counter() - started,
+    }
+
+
 def _switch_kernels(scheduler, runner, state: KernelProfiles, name: str, live: bool) -> dict:
+    if state.banks is not None:
+        return _switch_resident(scheduler, runner, state, name, live)
     started = time.perf_counter()
 
     def preflight():
@@ -470,7 +652,7 @@ def _switch_kernels(scheduler, runner, state: KernelProfiles, name: str, live: b
 def switch_kernel_profile(scheduler, *, name: str, live: bool = False) -> str:
     state = _state(scheduler.tp_worker.model_runner)
     result = _switch_kernels(scheduler, scheduler.tp_worker.model_runner, state, name, live)
-    if result["capture_s"] is not None:
+    if result["active"] != result["previous"]:
         state.active_mode = None
     state.switches.append({**result, "at": time.time()})
     return json.dumps(result)
@@ -487,6 +669,8 @@ def plan_mode(scheduler, *, name: str) -> str:
         {
             "mode": name,
             "kernels_change": state.modes[name]["kernels"] != state.active,
+            # Resident graphs: a kernel change needs no pause either.
+            "resident": state.banks is not None,
             "paused": _paused(scheduler),
             "holds_kv": _holds_kv(scheduler),
         }

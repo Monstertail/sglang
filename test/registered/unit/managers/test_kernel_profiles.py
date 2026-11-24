@@ -1,8 +1,8 @@
 """Unit tests for kernel profiles across two TP ranks.
 
 Two gloo processes on CPU; the model runner and the scheduler are stand-ins, the
-kernels are module attributes, and the "captured graph" is the kernel the runner
-called and held at its last recapture.
+kernels are module attributes, and a "captured graph" holds the kernel its capture
+called and the metadata tensor of its batch size, and replays them.
 
 Run:  python -m pytest test/registered/unit/managers/test_kernel_profiles.py -v
 """
@@ -20,6 +20,7 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 
 from sglang.srt.managers.scheduler_components import kernel_profiles as kp
+from sglang.srt.model_executor import graph_banks
 from sglang.test.ci.ci_register import register_cpu_ci
 from sglang.test.test_utils import CustomTestCase
 
@@ -42,6 +43,8 @@ MODULES = {
         "    def kernel(x):\n"
         "        raise RuntimeError('cannot run under capture')\n"
         "    return kernel\n"
+        "def make_graph_wrong(orig):\n"
+        "    return lambda x: orig(x) if isinstance(x, int) else orig(x) + 1\n"
         "def warmup(pairs):\n    warmed.append(sorted(pairs))\n"
         "def warmup_fails(pairs):\n    raise RuntimeError('compile failed')\n"
         "def check(pairs):\n"
@@ -91,6 +94,13 @@ def profiles(root):
             "raises": {
                 "bindings": [{"target": "kp_targets:kernel", "factory": "kp_impls:make_raising"}],
             },
+            # Passes its check, computes something else in its graphs.
+            "graph_wrong": {
+                "bindings": [
+                    {"target": "kp_targets:kernel", "factory": "kp_impls:make_graph_wrong"}
+                ],
+                "check": "kp_impls:check",
+            },
         },
         "modes": {
             "latency": {"scheduler": {"chunked_prefill_size": 4096, "prefill_decode_interval": 192}},
@@ -104,14 +114,89 @@ def profiles(root):
     }
 
 
+def resident(spec, names):
+    return {
+        **spec,
+        "resident_graphs": True,
+        "profiles": {n: p for n, p in spec["profiles"].items() if n in names},
+        "modes": {
+            n: m
+            for n, m in spec["modes"].items()
+            if m.get("kernels", kp.ORIGINAL) in (kp.ORIGINAL, *names)
+        },
+    }
+
+
+class Graph:
+    def __init__(self, kernel, metadata, scale):
+        self.kernel, self.metadata, self.scale = kernel, metadata, scale
+
+    def __call__(self):
+        value = float(self.kernel(self.metadata) * self.scale)
+        return types.SimpleNamespace(next_token_logits=torch.tensor([[value, -value]]))
+
+
+class GraphBackend:
+    def __init__(self):
+        self._graphs, self._outputs = {}, {}
+
+    @contextlib.contextmanager
+    def replay_session(self):
+        yield
+
+    def replay(self, key, batch):
+        return self._graphs[key]()
+
+
+class Attention:
+    attn_backend_list = None
+
+    def __init__(self):
+        self.cuda_graph_metadata_of_bucket_and_bs = {"verify": {}}
+        self.workspace = torch.zeros(2)
+        self.forward_metadata = None
+
+
+class GraphRunner:
+    """One graph per batch size; each reads its batch size's metadata, which the
+    first capture of that size stores."""
+
+    def __init__(self, model_runner):
+        self.model_runner = model_runner
+        self.backend = GraphBackend()
+        self.attn_backend = Attention()
+        self.scale = torch.ones(1)
+        self.capture()
+
+    def capture(self):
+        import kp_targets
+
+        kernel = kp_targets.kernel
+        if self.model_runner.on_capture is not None:
+            self.model_runner.on_capture(self)
+        for bs in (1, 2):
+            metadata = self.attn_backend.cuda_graph_metadata_of_bucket_and_bs["verify"]
+            metadata = metadata.setdefault(bs, torch.full((1,), float(bs)))
+            kernel(metadata)
+            self.backend._graphs[bs] = Graph(kernel, metadata, self.scale)
+            self.backend._outputs[bs] = None
+
+
 class Runner:
     def __init__(self):
         self.model = torch.nn.Linear(1, 1, bias=False)
         self.model.weight.data.fill_(3)
         self.fail_once = False
         self.prefill_graph = False
+        self.on_capture = None
+        self.spec_algorithm = types.SimpleNamespace(is_speculative=lambda: False)
         self.graph_memory_usage = {"decode": 0.5, "target_verify": 0.0}
         self.recapture_cuda_graphs()
+
+    @property
+    def captured(self):
+        """The kernel the batch size 1 graph replays."""
+        return self.decode_cuda_graph_runner.backend._graphs[1].kernel
 
     def has_prefill_cuda_graph(self):
         return self.prefill_graph
@@ -120,11 +205,7 @@ class Runner:
         if self.fail_once:
             self.fail_once = False
             raise ValueError("capture rejected")
-        import kp_targets
-
-        # A capture runs the kernels once and replays what it ran.
-        kp_targets.kernel(torch.tensor(1.0))
-        self.captured = kp_targets.kernel
+        self.decode_cuda_graph_runner = GraphRunner(self)
         self.captures = getattr(self, "captures", 0) + 1
 
 
@@ -173,6 +254,9 @@ def rank_main(rank, root):
                     "get_parallel",
                     return_value=types.SimpleNamespace(attn_dp_size=1, pp_size=1),
                 )
+            )
+            stack.enter_context(
+                patch.object(graph_banks, "model_capture_mode", contextlib.nullcontext)
             )
             import kp_impls
             import kp_targets
@@ -268,7 +352,13 @@ def rank_main(rank, root):
             # Live: only with generation paused and no request holding KV, and the
             # retracted requests' cached prefixes survive (no flush).
             plan = json.loads(kp.plan_mode(scheduler, name="throughput"))
-            assert plan == {"mode": "throughput", "kernels_change": True, "paused": False, "holds_kv": False}
+            assert plan == {
+                "mode": "throughput",
+                "kernels_change": True,
+                "resident": False,
+                "paused": False,
+                "holds_kv": False,
+            }
             idle["value"] = False  # requests are waiting
             with case.assertRaisesRegex(RuntimeError, "needs generation paused"):
                 kp.switch_mode(scheduler, name="throughput", live=True)
@@ -315,6 +405,69 @@ def rank_main(rank, root):
             finally:
                 torch.backends.cuda.matmul.allow_tf32 = False
 
+            # Resident graphs: admission captures every available profile's graphs;
+            # a switch selects them, serving or not, and recaptures nothing.
+            runner, scheduler, idle = engine()
+            state = kp.admit(scheduler, str(root / "profiles_resident.json"))
+            listed = json.loads(kp.list_kernel_profiles(scheduler))
+            p = listed["profiles"]
+            assert listed["resident"]["on"], listed
+            assert sorted(listed["resident"]["banks"]) == sorted([kp.ORIGINAL, "low_latency"])
+            assert p["low_latency"]["bank"]["graphs"] == 2, p
+            assert "graph bank: RuntimeError: cannot run under capture" in p["raises"]["reason"], p
+            assert "logits are not the original's" in p["graph_wrong"]["reason"], p
+            assert runner.captures == 1 and kp_targets.kernel is original_kernel
+            graphs = runner.decode_cuda_graph_runner
+            original_metadata = graphs.attn_backend.cuda_graph_metadata_of_bucket_and_bs
+            idle["value"] = False
+            out = switch(scheduler, "low_latency")
+            assert out["resident"] and out["capture_s"] is None and runner.captures == 1, out
+            assert runner.captured is kp_impls.fast and kp_targets.kernel is kp_impls.fast
+            assert graphs.attn_backend.cuda_graph_metadata_of_bucket_and_bs is not original_metadata
+            assert float(graphs.backend.replay(2, None).next_token_logits[0, 0]) == 4.0
+            back = switch(scheduler, kp.ORIGINAL)
+            assert back["previous"] == "low_latency" and runner.captured is original_kernel
+            assert graphs.attn_backend.cuda_graph_metadata_of_bucket_and_bs is original_metadata
+            plan = json.loads(kp.plan_mode(scheduler, name="throughput"))
+            assert plan["kernels_change"] and plan["resident"], plan
+            out = json.loads(kp.switch_mode(scheduler, name="throughput"))
+            assert out["kernels"]["resident"] and runner.captured is kp_impls.fast
+            assert runner.captures == 1
+            switch(scheduler, kp.ORIGINAL)
+            idle["value"] = True
+
+            # A bank whose capture replaces state the earlier graphs read, or changes
+            # what they compute, drops the banks: the engine recaptures and switches
+            # by recapturing.
+            for on_capture, message in (
+                (
+                    lambda g: setattr(g.attn_backend, "workspace", torch.zeros(2)),
+                    r"replaced captured state: \['attn\[0\]\.workspace'\]",
+                ),
+                (lambda g: g.scale.mul_(2), "changed the original graphs' logits"),
+            ):
+                runner, scheduler, idle = engine()
+                runner.on_capture = on_capture
+                state = kp.admit(scheduler, str(root / "profiles_resident.json"))
+                assert state.banks is None and runner.captures == 2, state.banks_reason
+                case.assertRegex(state.banks_reason, message)
+                assert state.profiles["low_latency"].available
+                assert state.profiles["low_latency"].bank is None
+                runner.on_capture = None
+                out = switch(scheduler, "low_latency")
+                assert out["capture_s"] is not None and runner.captured is kp_impls.fast
+                switch(scheduler, kp.ORIGINAL)
+
+            # Kernels that move process state under capture keep the server from starting.
+            try:
+                runner, scheduler, idle = engine()
+                with case.assertRaisesRegex(
+                    RuntimeError, "profiles' graphs moved process state: .*tf32_matmul"
+                ):
+                    kp.admit(scheduler, str(root / "profiles_resident_tf32.json"))
+            finally:
+                torch.backends.cuda.matmul.allow_tf32 = False
+
             # Without --kernel-profiles there is nothing to switch.
             runner, scheduler, idle = engine()
             with case.assertRaisesRegex(RuntimeError, "--kernel-profiles"):
@@ -329,6 +482,12 @@ class TestKernelProfiles(CustomTestCase):
             for name, text in MODULES.items():
                 (Path(d) / f"{name}.py").write_text(text)
             (Path(d) / "profiles.json").write_text(json.dumps(profiles(d)))
+            (Path(d) / "profiles_resident.json").write_text(
+                json.dumps(resident(profiles(d), ["low_latency", "wrong", "graph_wrong", "raises"]))
+            )
+            (Path(d) / "profiles_resident_tf32.json").write_text(
+                json.dumps(resident(profiles(d), ["sets_tf32"]))
+            )
             (Path(d) / "profiles_tf32.json").write_text(
                 json.dumps(
                     {

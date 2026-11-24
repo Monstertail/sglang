@@ -1996,11 +1996,12 @@ class Engine(EngineScoreMixin, EngineBase):
         return json.loads(self.collective_rpc("switch_mode", name=name, live=live))
 
     async def async_switch_mode(self, name: str, settle_s: float = 30.0) -> dict:
-        """Switch modes while serving. A mode that keeps the kernels applies its
-        scheduler settings from the next batch; one that changes them retracts the
-        running requests, rebinds and recaptures, and resumes them (they prefill
-        again, their cached prefixes kept). Returns ``switch_mode``'s result and
-        how long generation was paused."""
+        """Switch modes while serving. A mode that keeps the kernels, or whose
+        kernels' graphs are resident, takes effect from the next batch; one that
+        changes them otherwise retracts the running requests, rebinds and
+        recaptures, and resumes them (they prefill again, their cached prefixes
+        kept). Returns ``switch_mode``'s result and how long generation was
+        paused."""
         loop = asyncio.get_running_loop()
 
         def rpc(method, **kwargs):
@@ -2009,7 +2010,7 @@ class Engine(EngineScoreMixin, EngineBase):
             )
 
         plan = await rpc("plan_mode", name=name)
-        if not plan["kernels_change"]:
+        if not plan["kernels_change"] or plan["resident"]:
             return {**await rpc("switch_mode", name=name), "paused_s": 0.0}
         started = time.perf_counter()
         await self.tokenizer_manager.pause_generation(
