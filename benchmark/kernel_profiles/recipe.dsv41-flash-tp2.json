@@ -1,0 +1,36 @@
+{
+  "checkpoint": "deepseek-ai/DeepSeek-V4.1-Flash@1bae0e1088993b9b82de08f59de5be5a34e42170",
+  "gpus": 2,
+  "server_args": [
+    "--served-model-name", "deepseek-v4.1-flash", "--trust-remote-code",
+    "--tp", "2", "--ep-size", "1",
+    "--speculative-algorithm", "DSPARK", "--speculative-dspark-block-size", "5",
+    "--disable-shared-experts-fusion",
+    "--fp8-gemm-backend", "aiter", "--cuda-graph-backend-prefill", "disabled",
+    "--mem-fraction-static", "0.70", "--chunked-prefill-size", "16384",
+    "--prefill-decode-interval", "192", "--schedule-policy", "lpm", "--swa-prefix-tails", "512",
+    "--max-running-requests", "16", "--cuda-graph-max-bs-decode", "64",
+    "--reasoning-parser", "auto", "--tool-call-parser", "auto",
+    "--watchdog-timeout", "3600", "--random-seed", "42"
+  ],
+  "env": {
+    "AITER_BF16_FP8_MOE_BOUND": "0",
+    "GPU_MAX_HW_QUEUES": "2",
+    "HF_DATASETS_OFFLINE": "1",
+    "HF_HUB_OFFLINE": "1",
+    "HSA_NO_SCRATCH_RECLAIM": "0",
+    "ROCM_QUICK_REDUCE_QUANTIZATION": "INT8",
+    "SGLANG_DEFAULT_THINKING": "1",
+    "SGLANG_DSV41_ENGRAM_HOST_TABLE_LAYOUT": "per_rank",
+    "SGLANG_DSV41_REASONING_EFFORT": "high",
+    "SGLANG_ENABLE_DSV41_ENGRAM_HOST_TABLE": "1",
+    "SGLANG_HIP_DSV41_INDEX_K_PAGE8": "0",
+    "SGLANG_HIP_FP4_INDEXER_ROWGROUP": "1",
+    "SGLANG_OPT_HIP_FLYDSL_MXFP8": "1",
+    "SGLANG_OPT_HIP_OPUS_SPARSE_PREFILL": "true",
+    "SGLANG_USE_AITER": "1",
+    "SGLANG_USE_ROCM700A": "0",
+    "TORCH_BLAS_PREFER_HIPBLASLT": "1",
+    "TRITON_HIP_USE_ASYNC_COPY": "0"
+  }
+}
