@@ -180,6 +180,37 @@ phases matched these within 1-3%, its clean always-latency phases were about 10%
   steps from 129 to 114 per second), so a 1.3x stage 1 is worth about 3% at most. All
   the adaptive gain here comes from the scheduler settings.
 
+### Where a decode step's time goes
+
+`bench_profile.py`: steady decode with every request decoding (prefills not deferred),
+40 steps recorded with the torch profiler on rank 0, CUDA graph replays included; a
+step is the DSpark draft and the target verify. Original kernels. Share of GPU busy
+time per step:
+
+| Category | bs 1, 2k prompt | bs 16, 2k | bs 1, 16k | bs 16, 16k |
+|---|---|---|---|---|
+| MoE stage 1 (`mfma_moe1_*`) | 0.95 ms (12%) | 3.36 ms (22%) | 1.15 ms (14%) | 3.17 ms (21%) |
+| MoE stage 2 (`gemm2_a4w4_*`) | 0.54 ms (7%) | 1.76 ms (11%) | 0.64 ms (8%) | 1.68 ms (11%) |
+| MoE routing, sorting, quant | 0.67 ms (8%) | 1.12 ms (7%) | 0.65 ms (8%) | 1.11 ms (7%) |
+| All-reduce (aiter Lamport; one-shot at bs 1, two-shot at bs 16) | 0.48 ms (6%) | 2.18 ms (14%) | 0.50 ms (6%) | 2.25 ms (15%) |
+| Attention (sparse MLA, indexer) | 1.06 ms (13%) | 1.57 ms (10%) | 1.05 ms (13%) | 1.63 ms (11%) |
+| Hyper-connections (`_hc_boundary_*`, Sinkhorn) | 1.33 ms (17%) | 1.45 ms (9%) | 1.31 ms (16%) | 1.46 ms (10%) |
+| Dense GEMM + quant (fp8/mxfp8) | 2.23 ms (28%) | 3.05 ms (20%) | 2.19 ms (27%) | 3.03 ms (20%) |
+| Norm, copy, elementwise | 0.51 ms (6%) | 0.63 ms (4%) | 0.50 ms (6%) | 0.62 ms (4%) |
+| Other (sampling, rotary, page table, engram) | 0.21 ms (3%) | 0.22 ms (1%) | 0.25 ms (3%) | 0.27 ms (2%) |
+| GPU busy / wall per step | 7.98 / 8.22 ms | 15.34 / 16.06 ms | 8.24 / 8.62 ms | 15.21 / 15.81 ms |
+
+- The two regimes are bound by different kernels. At batch 1 (M=6, the latency
+  mode's decode) dense GEMMs and hyper-connections take 45%; at batch 16 (M=96, the
+  throughput mode's) MoE stage 1 and 2 and the all-reduce take 47%. A latency binary
+  set and a throughput binary set would optimize different kernels.
+- Stage 1's 12% at batch 1 matches the earlier estimate from running it twice; at
+  batch 16 it is the largest single kernel (22%).
+- Prompt length barely matters (2k vs 16k: within 5%): sparse attention reads a fixed
+  number of blocks, so attention parameters chosen by context length are not a lever
+  for this model at these lengths.
+- 16x the batch costs 2x the step time: decode at batch 1 is far from compute-bound.
+
 ### Correctness of the banks
 
 - Greedy outputs are not reproducible run to run in this configuration (the same
@@ -228,6 +259,7 @@ Files here:
 | File | What |
 |---|---|
 | `bench_modes.py` | The driver: checks, the loaded mode flips, and the four runs; writes `events.jsonl`, `results.json` |
+| `bench_profile.py` | Decode-step kernel breakdown per batch size and prompt length; writes `kernels-<case>.json`, `events.jsonl` (needs no patch: original kernels) |
 | `summarize.py` | Prints a run's `events.jsonl` as markdown tables |
 | `run_container.sh` | Applies the branch to an image's sglang and runs the driver on two GPUs, with the guard |
 | `profiles_resident.json` | Profiles `same`, `tuned` with resident graphs; modes `latency`, `same`, `throughput`, `throughput-settings` |
@@ -259,6 +291,8 @@ Steps:
 4. Benchmark (about 30 min: 6 min startup, checks, 2 min warmup, four 4-minute runs):
    the same with `STAGE=bench`, no `KP_MAX_BS`, a new `OUT`.
 5. Remove the container (`docker rm -f kp-bench`) when it is done; the guard exits.
+6. Kernel breakdown: run `bench_profile.py` the same way (no patch needed; `KP_CASES`
+   chooses batch sizes and prompt lengths), then read `kernels-<case>.json`.
 
 Applying the branch to an older image (`run_container.sh` does this): `git diff 47361c5
 HEAD -- python/` without `arg_groups/field_order.py`, `git apply` it in
@@ -269,11 +303,15 @@ into `POSITIONAL_FIELD_ORDER`, and, if the scheduler has no
 
 ## Next
 
-- Kernel sets that differ by traffic in ways the per-M tuned tables cannot express:
-  speculative depth (verify graphs of other shapes), attention parameters chosen by
-  context length, MoE configurations for an expert-load distribution. Within one
-  mode, aiter already picks kernels per M; the two modes here ran M=6 (batch 1) and
-  M=84-96 (batches 14-16) with different launch parameters.
+- Binary sets that matter per regime, from the breakdown above: for throughput, MoE
+  stage 1 and 2 and the all-reduce at M=84-96; for latency, the dense fp8 GEMMs and
+  the hyper-connection kernels at M=6-12. Within one mode aiter already picks
+  kernels per M (the two modes here ran M=6 and M=84-96 with different launch
+  parameters), so a swap is needed where the sets cannot live in one table: other
+  kernel families or fusions at a call site, global choices (speculative depth, CU
+  partitioning for overlap), or a new version deployed without a restart.
+- Speculative depth by load: upstream `--speculative-adaptive` picks the number of
+  draft steps by batch size for EAGLE/EAGLE3, not DSpark.
 - Admission warmup over every M; banks for the draft graphs; ahead-of-time kernel
   binaries instead of compiles at startup.
 - The controller inside the scheduler, on queue depth and TTFT/ITL targets; an HTTP
