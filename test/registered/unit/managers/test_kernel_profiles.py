@@ -9,6 +9,7 @@ Run:  python -m pytest test/registered/unit/managers/test_kernel_profiles.py -v
 
 import contextlib
 import json
+import os
 import sys
 import tempfile
 import types
@@ -19,6 +20,7 @@ import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 
+from sglang.srt.managers.scheduler_components import kernel_binaries
 from sglang.srt.managers.scheduler_components import kernel_profiles as kp
 from sglang.srt.model_executor import graph_banks
 from sglang.test.ci.ci_register import register_cpu_ci
@@ -467,6 +469,40 @@ def rank_main(rank, root):
                     kp.admit(scheduler, str(root / "profiles_resident_tf32.json"))
             finally:
                 torch.backends.cuda.matmul.allow_tf32 = False
+
+            # Prebuilt binaries: admission reports the set and what startup compiled
+            # into it; strict refuses to start until the set covers startup, then
+            # closes FlyDSL to compiles.
+            toolchain = {"flydsl": "x", "flydsl_key": "k", "triton": "t", "arch": "gfx950"}
+            with patch.object(kernel_binaries, "toolchain", return_value=toolchain):
+                bin_root = root / f"bin{rank}"
+                (bin_root / "flydsl/stage1_k1").mkdir(parents=True)
+                (bin_root / "flydsl/stage1_k1/a.pkl").write_bytes(b"stage1")
+                kernel_binaries.write_manifest(bin_root)
+                specs = {}
+                for serving in ("warn", "strict"):
+                    specs[serving] = root / f"profiles_bin{rank}_{serving}.json"
+                    specs[serving].write_text(json.dumps(
+                        {"profiles": {}, "binaries": {"dir": str(bin_root), "serving": serving}}))
+                with patch.dict(os.environ):
+                    kernel_binaries.configure(str(specs["warn"]))
+                    (bin_root / "flydsl/late_k2").mkdir()
+                    (bin_root / "flydsl/late_k2/b.pkl").write_bytes(b"late")
+                    runner, scheduler, idle = engine()
+                    kp.admit(scheduler, str(specs["warn"]))
+                    described = json.loads(kp.list_kernel_profiles(scheduler))["binaries"]
+                    assert described["entries"] == 1 and not described["run_only"], described
+                    assert described["compiled_at_startup"] == ["flydsl:late"], described
+                with patch.dict(os.environ):
+                    kernel_binaries.configure(str(specs["strict"]))
+                    runner, scheduler, idle = engine()
+                    with case.assertRaisesRegex(
+                        RuntimeError, "strict kernel binaries: startup compiled flydsl:late"
+                    ):
+                        kp.admit(scheduler, str(specs["strict"]))
+                    kernel_binaries.write_manifest(bin_root)
+                    kp.admit(scheduler, str(specs["strict"]))
+                    assert os.environ[kernel_binaries.RUN_ONLY] == "1"
 
             # Without --kernel-profiles there is nothing to switch.
             runner, scheduler, idle = engine()

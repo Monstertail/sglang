@@ -24,6 +24,17 @@ calls = collections.Counter()
 launches = {}
 LAUNCH_KEYS = ("tile_m", "tile_n", "tile_k", "out_dtype", "use_async_copy", "waves_per_eu", "b_nt", "k_wave",
                "xcd_swizzle", "v2_output_layout", "gate_mode", "topk")
+# Every launch signature seen, written before the call that first shows it.
+signatures = {}
+
+
+def _signature(name, a, args, kwargs):
+    tensors = [a, *args, *(v for v in kwargs.values() if torch.is_tensor(v))]
+    return json.dumps({
+        "name": name,
+        "tensors": [[list(t.shape), str(t.dtype)] for t in tensors if torch.is_tensor(t)],
+        "kwargs": {k: str(v) for k, v in sorted(kwargs.items()) if not torch.is_tensor(v)},
+    }, sort_keys=True)
 
 
 def _counted(name, fn):
@@ -33,9 +44,13 @@ def _counted(name, fn):
         key = f"{name} M{int(a.shape[0])} {mode}"
         calls[key] += 1
         launches.setdefault(f"M{int(a.shape[0])}", {k: str(kwargs.get(k, "default")) for k in LAUNCH_KEYS})
+        signature = _signature(name, a, args, kwargs)
+        new = signature not in signatures
+        signatures.setdefault(signature, int(a.shape[0]))
         n = sum(calls.values())
-        if n in (1, 10, 100) or n % 200 == 0 or mode == "capture":
-            (OUT / f"calls-{os.getpid()}.json").write_text(json.dumps({"calls": dict(calls), "launches": launches}))
+        if new or n in (1, 10, 100) or n % 200 == 0 or mode == "capture":
+            (OUT / f"calls-{os.getpid()}.json").write_text(json.dumps(
+                {"calls": dict(calls), "launches": launches, "signatures": signatures}))
         return fn(a, *args, **kwargs)
 
     return stage1

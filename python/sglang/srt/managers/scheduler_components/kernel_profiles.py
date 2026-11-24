@@ -66,6 +66,9 @@ on the capture inputs differ from the original's beyond ``"bank_check"``, is
 unavailable. If capturing one replaces state the graphs captured before read, or
 changes what the original graphs compute, the engine drops the banks, recaptures
 its original graphs and switches by recapturing.
+
+``"binaries"`` names a prebuilt FlyDSL cache the engine loads every kernel from,
+and whether a compile while serving is reported or refused (``kernel_binaries``).
 """
 
 import importlib
@@ -78,6 +81,7 @@ from typing import Dict, List, Optional, Tuple
 import torch
 import torch.distributed as dist
 
+from sglang.srt.managers.scheduler_components import kernel_binaries
 from sglang.srt.managers.scheduler_components.forward_hot_reload import (
     _all_ranks,
     parameter_layout,
@@ -227,6 +231,7 @@ class KernelProfiles:
         self.active_mode: Optional[str] = None
         self.banks: Optional[graph_banks.GraphBanks] = None
         self.banks_reason: Optional[str] = None
+        self.binaries: Optional[kernel_binaries.Binaries] = None
 
     def mode_available(self, name: str) -> Tuple[bool, Optional[str]]:
         mode = self.modes.get(name)
@@ -258,6 +263,7 @@ class KernelProfiles:
                 "reason": self.banks_reason,
                 **(self.banks.describe() if self.banks is not None else {}),
             },
+            "binaries": self.binaries.describe() if self.binaries is not None else None,
             "profiles": {
                 name: {
                     "available": p.available,
@@ -345,6 +351,8 @@ def admit(scheduler, path: Optional[str] = None) -> KernelProfiles:
                 "capturing the kernel profiles' graphs moved process state: "
                 + "; ".join(moved["flags"] + moved["path"])
             )
+    if spec.get("binaries"):
+        _admit_binaries(scheduler, state, spec["binaries"])
     runner.kernel_profiles = state
     logger.info(
         "kernel profiles: "
@@ -354,6 +362,27 @@ def admit(scheduler, path: Optional[str] = None) -> KernelProfiles:
         )
     )
     return state
+
+
+def _admit_binaries(scheduler, state: KernelProfiles, spec: dict) -> None:
+    """Check the binaries every kernel loaded from, then guard the serving that follows."""
+    binaries = kernel_binaries.Binaries(spec)
+    reports = _gather(scheduler, (binaries.check(), binaries.compiled_at_startup))
+    binaries.problems = sorted({p for problems, _ in reports for p in problems})
+    binaries.compiled_at_startup = sorted({k for _, compiled in reports for k in compiled})
+    trouble = binaries.problems + [
+        f"startup compiled {kernel}" for kernel in binaries.compiled_at_startup
+    ]
+    if trouble and binaries.serving == "strict":
+        raise RuntimeError("strict kernel binaries: " + "; ".join(trouble[:10]))
+    if trouble:
+        logger.warning("kernel binaries: " + "; ".join(trouble[:10]))
+    binaries.guard()
+    state.binaries = binaries
+    logger.info(
+        f"kernel binaries: {len(binaries.manifest.get('entries', {})) if binaries.manifest else 0} "
+        f"entries from {binaries.root}, serving {binaries.serving}"
+    )
 
 
 def _bank_room(runner, state: KernelProfiles) -> str:

@@ -1,0 +1,22 @@
+{
+  "path": ["/kp"],
+  "memory_margin_gb": 2.0,
+  "resident_graphs": true,
+  "binaries": {"dir": "/out/binaries", "serving": "strict"},
+  "profiles": {
+    "same": {
+      "bindings": [{"target": "aiter.ops.flydsl.moe_kernels:flydsl_moe_stage1", "factory": "kpkg.dsv41_stage1:make_counted"}],
+      "check": "kpkg.dsv41_stage1:check"
+    },
+    "tuned": {
+      "bindings": [{"target": "aiter.ops.flydsl.moe_kernels:flydsl_moe_stage1", "factory": "kpkg.dsv41_stage1:make_tuned"}],
+      "check": "kpkg.dsv41_stage1:check"
+    }
+  },
+  "modes": {
+    "latency": {"kernels": "original", "scheduler": {"chunked_prefill_size": 4096, "prefill_decode_interval": 192}},
+    "same": {"kernels": "same", "scheduler": {"chunked_prefill_size": 4096, "prefill_decode_interval": 192}},
+    "throughput": {"kernels": "tuned", "scheduler": {"chunked_prefill_size": 16384, "prefill_decode_interval": 0}},
+    "throughput-settings": {"kernels": "original", "scheduler": {"chunked_prefill_size": 16384, "prefill_decode_interval": 0}}
+  }
+}

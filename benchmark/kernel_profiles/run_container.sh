@@ -10,7 +10,10 @@
 #
 # Optional: PROFILES (file in this directory, default profiles_resident.json),
 # RECIPE (default recipe.dsv41-flash-tp2.json), KP_MAX_BS (2 for the smoke),
-# NAME (container name, default kp-bench), APPLY=0 (the image already has the branch).
+# NAME (container name, default kp-bench), APPLY=0 (the image already has the branch),
+# DRIVER (bench_modes.py, build_binaries.py or bench_profile.py), BINARIES (a built
+# binary set, copied to OUT/binaries for profiles_binaries*.json; build into an
+# empty OUT with DRIVER=build_binaries.py and PROFILES=profiles_binaries.json).
 set -euo pipefail
 : "${IMAGE:?}" "${WEIGHTS:?}" "${PROMPT:?}" "${HARNESS:?}" "${TREE:?}" "${OUT:?}" "${GPUS:?}"
 STAGE=${STAGE:-bench}
@@ -18,6 +21,7 @@ PROFILES=${PROFILES:-profiles_resident.json}
 RECIPE=${RECIPE:-recipe.dsv41-flash-tp2.json}
 NAME=${NAME:-kp-bench}
 APPLY=${APPLY:-1}
+DRIVER=${DRIVER:-bench_modes.py}
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/../.." && pwd)
 BASE=47361c5  # the upstream commit the branch is built on
@@ -31,7 +35,11 @@ busy=$(holders)
 [ -n "$busy" ] && { echo "GPUs in use: $busy"; exit 5; }
 
 mkdir -p "$OUT/kp" "$OUT/wf"
-cp -r "$HERE/kpkg" "$HERE/loader" "$HERE/bench_modes.py" "$OUT/kp/"
+cp -r "$HERE/kpkg" "$HERE/loader" "$HERE"/*.py "$OUT/kp/"
+if [ -n "${BINARIES:-}" ]; then
+  # As root: the compilers write entries only their owner can read.
+  docker run --rm --entrypoint cp -v "$BINARIES":/src:ro -v "$OUT":/dst "$IMAGE" -a /src /dst/binaries
+fi
 cp "$HERE/$PROFILES" "$OUT/kp/profiles.json"
 cp "$HARNESS/shadow.py" "$OUT/kp/"
 cp "$HERE/$RECIPE" "$OUT/wf/recipe.json"
@@ -47,7 +55,7 @@ docker run -d --name "$NAME" --label kp-bench=1 --device /dev/kfd $devices \
   -v "$WEIGHTS":/work/models/dsv41:ro -v "$OUT/wf":/wf:ro -v "$HARNESS":/lean:ro \
   -v "$OUT/kp":/kp:ro -v "$TREE":/trees/ab-w4:ro -v "$OUT":/out \
   -e PYTHONPATH=/kp/loader -e KP_OUT=/out -e PYTHONDONTWRITEBYTECODE=1 \
-  -e KP_STAGE="$STAGE" -e KP_APPLY="$APPLY" ${KP_MAX_BS:+-e KP_MAX_BS=$KP_MAX_BS} \
+  -e KP_STAGE="$STAGE" -e KP_APPLY="$APPLY" -e KP_DRIVER="$DRIVER" ${KP_MAX_BS:+-e KP_MAX_BS=$KP_MAX_BS} \
   --entrypoint bash "$IMAGE" -c '
 cd /sgl-workspace/sglang
 if [ "$KP_APPLY" = 1 ]; then
@@ -73,7 +81,7 @@ if not Path("python/sglang/srt/managers/scheduler_components/pause_state.py").ex
 EOF
 fi
 /opt/venv/bin/python -c "import sglang.srt.server_args" >> /out/apply.log 2>&1 || { echo IMPORT_FAILED >> /out/apply.log; exit 4; }
-exec /opt/venv/bin/python /kp/bench_modes.py > /out/driver.log 2>&1'
+exec /opt/venv/bin/python /kp/$KP_DRIVER > /out/driver.log 2>&1'
 
 # The guard outlives this shell: it removes the container if another one takes its GPUs.
 cat > "$OUT/guard.sh" <<GUARD

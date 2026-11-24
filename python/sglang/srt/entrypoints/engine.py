@@ -116,6 +116,7 @@ from sglang.srt.managers.multi_tokenizer_mixin import (
 )
 from sglang.srt.managers.req_types import ReturnHiddenStatesMode
 from sglang.srt.managers.scheduler import run_scheduler_process
+from sglang.srt.managers.scheduler_components import kernel_binaries
 from sglang.srt.managers.tokenizer_manager import (
     TokenizerManager,
     get_tokenizer_worker_class,
@@ -2037,6 +2038,8 @@ class Engine(EngineScoreMixin, EngineBase):
 
 def _set_envs_and_config(server_args: ServerArgs):
     cfg = resolving_view(server_args)
+    # Prebuilt kernel binaries must be in place before any scheduler compiles.
+    kernel_binaries.configure(getattr(server_args, "kernel_profiles", None))
     # Set global environments
     # MNNVL fabric (GB200/GB300) multi-node: cross-node NVLink needs NCCL's
     # cuMem-based buffers and MNNVL transport. Default them on (user-set

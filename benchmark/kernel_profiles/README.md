@@ -24,6 +24,7 @@ efficiently and safely. The branch makes that a server feature:
 | [3b5831a](https://github.com/Monstertail/sglang/commit/3b5831a) | Kernel profiles (`--kernel-profiles`): admission on every TP rank, switch by rebinding and recapturing, rollback |
 | [4f4c466](https://github.com/Monstertail/sglang/commit/4f4c466) | Modes, and `Engine.async_switch_mode`: switch while serving (pause with retract, recapture, resume) |
 | [b752352](https://github.com/Monstertail/sglang/commit/b752352a14f4bda7b0923989969ae8a412e0c317) | Resident graph banks: a switch selects captured graphs between two scheduler steps, with no pause |
+| `kernel-binaries` branch | Prebuilt kernel binaries: FlyDSL and Triton caches built offline with a manifest, loaded at startup, closed to compiles while serving |
 
 Code: `python/sglang/srt/managers/scheduler_components/kernel_profiles.py`,
 `python/sglang/srt/model_executor/graph_banks.py`, `Engine.switch_kernel_profile`,
@@ -252,6 +253,64 @@ time per step:
   some windows of the earlier run; `run_container.sh` refuses GPUs another container
   holds and stops its own container if one arrives.
 
+## Prebuilt kernel binaries (branch `kernel-binaries`)
+
+A binary set is the kernels an engine compiles, compiled ahead of time: a directory
+holding FlyDSL's and Triton's disk caches (`flydsl/`, `triton/`) and `manifest.json`
+(the compilers and target they were built for, each entry's size and sha256). Code:
+`python/sglang/srt/managers/scheduler_components/kernel_binaries.py`; tests:
+`test/registered/unit/managers/test_kernel_binaries.py`.
+
+```json
+"binaries": {"dir": "/out/binaries", "serving": "strict", "verify": true}
+```
+
+- **Loading.** The engine points `FLYDSL_RUNTIME_CACHE_DIR` and `TRITON_CACHE_DIR`
+  into `dir` before its schedulers start, replacing the defaults aiter and SGLang set
+  (a directory set by hand is a conflict). Every FlyDSL and Triton kernel, the
+  original ones and every profile's, loads from it.
+- **Admission** checks the manifest against the process (compiler versions, the
+  FlyDSL toolchain fingerprint, the target) and the directory (every entry present
+  and unchanged), and lists the kernels startup still compiled.
+- **Serving.** `warn` lets a kernel compile and reports it
+  (`get_kernel_profiles()["binaries"]["compiled_while_serving"]`). `strict` refuses to
+  start on any manifest problem or startup compile, and sets
+  `FLYDSL_RUNTIME_RUN_ONLY=1`: a FlyDSL kernel without a cached build raises instead of
+  compiling, which stops the scheduler. Triton has no such switch; its compiles are
+  reported. `strict` is for proving a set covers a workload; `warn` is the safe
+  default.
+- **Building** (`build_binaries.py`): the FlyDSL cache starts as a copy of the one
+  aiter ships precompiled (14,474 entries, 210 MB in this image; aiter points FlyDSL
+  at it unless the variable is set). Then the engine starts with the profiles'
+  resident banks, and in every mode serves single prompts of 57 lengths from 1 to
+  16384 tokens and five batches, each mode with prompts of its own after a cache
+  flush. The directory must be writable, and copied as root: the compilers write
+  entries only their owner can read.
+
+What decides coverage: the engine picks a kernel's launch configuration from aiter's
+tuned table for the token count (here `aiter/configs/model_configs/dsv41_fp4_tuned_fmoe.csv`:
+15 rows, tokens 1 to 16384, 10 stage-1 configurations for 385 experts, top-7, two of
+them with `xcd_swizzle` 4 at 8192 and 16384 tokens), and the token count is not part of
+what a configuration compiles. A build covers a workload when it reaches every table
+row the workload can, in every mode.
+
+Measured (DeepSeek-V4.1-Flash TP2, profiles `same` and `tuned` resident):
+
+| | Startup (ready) | Kernels compiled at startup | `tuned` bank capture |
+|---|---|---|---|
+| aiter's shipped cache only (the build run) | 333-339 s | 1,425 cache entries (FlyDSL and Triton) | 9.4-9.5 s |
+| A built set, `strict` | 285-290 s | none | 6.8-7.3 s |
+
+- The built set: 18,088 entries, 317 MB, 86 kernels.
+- `strict` refused to start on a copy missing entries (copied as a user who could not
+  read them): the manifest check works.
+- `strict` stopped the scheduler while serving on a `tuned` stage-1 configuration the
+  build never compiled (the 16384-token row, `xcd_swizzle` 4, reached by 8 users of
+  1.9k-token prompts). The build had sent the same prompts in every mode, so in the
+  `tuned` mode the radix cache held them and prefills were a few tokens long. With
+  prompts per mode and a flush, a throughput-only build compiled that configuration.
+  A full rebuild and a `strict` rerun are still to do.
+
 ## Reproducing on another cluster
 
 Files here:
@@ -264,6 +323,8 @@ Files here:
 | `run_container.sh` | Applies the branch to an image's sglang and runs the driver on two GPUs, with the guard |
 | `profiles_resident.json` | Profiles `same`, `tuned` with resident graphs; modes `latency`, `same`, `throughput`, `throughput-settings` |
 | `profiles_modes.json` | Profile `tuned` without resident graphs (switch by recapture) |
+| `build_binaries.py` | Builds a binary set into `OUT/binaries`: seed, startup, per-mode prompt sweep, manifest |
+| `profiles_binaries.json`, `profiles_binaries_strict.json` | `profiles_resident.json` with `binaries` at `/out/binaries`, serving `warn` and `strict` |
 | `kpkg/dsv41_stage1.py` | The profile package |
 | `recipe.dsv41-flash-tp2.json` | Engine flags and environment of the runs |
 | `loader/sitecustomize.py` | Loads weights synchronously in every server process (HIP deadlock in the threaded loader on MI355X with ROCm 7.2) |
@@ -293,6 +354,11 @@ Steps:
 5. Remove the container (`docker rm -f kp-bench`) when it is done; the guard exits.
 6. Kernel breakdown: run `bench_profile.py` the same way (no patch needed; `KP_CASES`
    chooses batch sizes and prompt lengths), then read `kernels-<case>.json`.
+7. Binaries (about 12 min, then 8): build with `DRIVER=build_binaries.py
+   PROFILES=profiles_binaries.json OUT=/path/kp-bin-build`; serve from it with
+   `BINARIES=/path/kp-bin-build/binaries PROFILES=profiles_binaries_strict.json
+   STAGE=smoke OUT=/path/kp-bin-strict`. Read `binaries` in the `ready` and `final`
+   events: `problems` and `compiled_at_startup` empty, and the run reaching `done`.
 
 Applying the branch to an older image (`run_container.sh` does this): `git diff 47361c5
 HEAD -- python/` without `arg_groups/field_order.py`, `git apply` it in
@@ -312,8 +378,11 @@ into `POSITIONAL_FIELD_ORDER`, and, if the scheduler has no
   partitioning for overlap), or a new version deployed without a restart.
 - Speculative depth by load: upstream `--speculative-adaptive` picks the number of
   draft steps by batch size for EAGLE/EAGLE3, not DSpark.
-- Admission warmup over every M; banks for the draft graphs; ahead-of-time kernel
-  binaries instead of compiles at startup.
+- Binaries: rebuild and rerun `strict` with prompts per mode; build from the tuned
+  tables (every kernel name a profile's kernels can take, compiled with
+  `FLYDSL_COMPILE_ONLY=1`, as aiter's own AOT does) instead of reaching rows through
+  requests; a refusal for Triton compiles; publishing a set beside the weights.
+- Banks for the draft graphs.
 - The controller inside the scheduler, on queue depth and TTFT/ITL targets; an HTTP
   endpoint; upstream interfaces for exporting and installing a runner's graphs instead
   of `graph_banks` reaching into the runner.
