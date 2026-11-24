@@ -81,6 +81,7 @@ from sglang.srt.managers.disagg_service import start_disagg_service_for_rust_ser
 from sglang.srt.managers.io_struct import (
     BeginWeightUpdateReqInput,
     CloseSessionReqInput,
+    ContinueGenerationReqInput,
     DestroyWeightsUpdateGroupReqInput,
     EmbeddingReqInput,
     EndWeightUpdateReqInput,
@@ -91,6 +92,7 @@ from sglang.srt.managers.io_struct import (
     LoadLoRAAdapterReqInput,
     MultimodalDataInputFormat,
     OpenSessionReqInput,
+    PauseGenerationReqInput,
     ProfileReq,
     ProfileReqType,
     ReleaseMemoryOccupationReqInput,
@@ -1984,8 +1986,50 @@ class Engine(EngineScoreMixin, EngineBase):
         return json.loads(self.collective_rpc("switch_kernel_profile", name=name))
 
     def get_kernel_profiles(self) -> dict:
-        """The active kernel profile and each profile's admission result."""
+        """The active kernel profile and mode, and each one's admission result."""
         return json.loads(self.collective_rpc("list_kernel_profiles"))
+
+    def switch_mode(self, name: str, live: bool = False) -> dict:
+        """Serve mode ``name`` from ``--kernel-profiles``: its kernels (rebound and
+        recaptured if they differ) and its scheduler settings. ``live`` needs
+        generation paused with mode ``retract``; see ``async_switch_mode``."""
+        return json.loads(self.collective_rpc("switch_mode", name=name, live=live))
+
+    async def async_switch_mode(self, name: str, settle_s: float = 30.0) -> dict:
+        """Switch modes while serving. A mode that keeps the kernels applies its
+        scheduler settings from the next batch; one that changes them retracts the
+        running requests, rebinds and recaptures, and resumes them (they prefill
+        again, their cached prefixes kept). Returns ``switch_mode``'s result and
+        how long generation was paused."""
+        loop = asyncio.get_running_loop()
+
+        def rpc(method, **kwargs):
+            return loop.run_in_executor(
+                None, lambda: json.loads(self.collective_rpc(method, **kwargs))
+            )
+
+        plan = await rpc("plan_mode", name=name)
+        if not plan["kernels_change"]:
+            return {**await rpc("switch_mode", name=name), "paused_s": 0.0}
+        started = time.perf_counter()
+        await self.tokenizer_manager.pause_generation(
+            PauseGenerationReqInput(mode="retract")
+        )
+        try:
+            # The pause reaches the scheduler on another socket than the RPCs.
+            while True:
+                plan = await rpc("plan_mode", name=name)
+                if plan["paused"] and not plan["holds_kv"]:
+                    break
+                if time.perf_counter() - started > settle_s:
+                    raise RuntimeError(f"generation did not pause within {settle_s}s")
+                await asyncio.sleep(0.05)
+            result = await rpc("switch_mode", name=name, live=True)
+        finally:
+            await self.tokenizer_manager.continue_generation(
+                ContinueGenerationReqInput(torch_empty_cache=False)
+            )
+        return {**result, "paused_s": time.perf_counter() - started}
 
     # score() and async_score() are provided by EngineScoreMixin
 

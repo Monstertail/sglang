@@ -92,6 +92,15 @@ def profiles(root):
                 "bindings": [{"target": "kp_targets:kernel", "factory": "kp_impls:make_raising"}],
             },
         },
+        "modes": {
+            "latency": {"scheduler": {"chunked_prefill_size": 4096, "prefill_decode_interval": 192}},
+            "latency_big_chunks": {"scheduler": {"chunked_prefill_size": 16384}},
+            "throughput": {
+                "kernels": "low_latency",
+                "scheduler": {"chunked_prefill_size": 16384, "prefill_decode_interval": 0},
+            },
+            "broken": {"kernels": "wrong"},
+        },
     }
 
 
@@ -116,16 +125,30 @@ class Runner:
         # A capture runs the kernels once and replays what it ran.
         kp_targets.kernel(torch.tensor(1.0))
         self.captured = kp_targets.kernel
+        self.captures = getattr(self, "captures", 0) + 1
 
 
 def engine():
     runner = Runner()
-    idle = {"value": True}
+    # value: nothing at all queued or running; kv: some request holds KV.
+    idle = {"value": True, "kv": False, "flushes": 0}
+
+    def flush_cache():
+        idle["flushes"] += 1
+        return True
+
     scheduler = types.SimpleNamespace(
         tp_group=types.SimpleNamespace(cpu_group=dist.group.WORLD),
         tp_worker=types.SimpleNamespace(model_runner=runner),
-        flush_cache=lambda: True,
-        is_fully_idle=lambda: idle["value"],
+        flush_cache=flush_cache,
+        is_fully_idle=lambda ignore_waiting=False: (
+            not idle["kv"] if ignore_waiting else idle["value"]
+        ),
+        pause_state=types.SimpleNamespace(paused=False),
+        chunked_prefill_size=8192,
+        prefill_decode_interval=0,
+        prefill_decode_interval_min_bs=1,
+        _prefill_decode_interval_remaining=0,
     )
     return runner, scheduler, idle
 
@@ -220,6 +243,54 @@ def rank_main(rank, root):
             with case.assertRaisesRegex(RuntimeError, "kept kernel profile 'original'"):
                 switch(scheduler, "raises")
             assert runner.captured is original_kernel and not state.broken
+
+            # Modes: kernels and scheduler settings together, the startup value for
+            # a setting a mode leaves out; a settings-only switch recaptures nothing.
+            modes = json.loads(kp.list_kernel_profiles(scheduler))["modes"]
+            assert modes["throughput"]["available"] and not modes["broken"]["available"]
+            out = json.loads(kp.switch_mode(scheduler, name="throughput"))
+            assert out["kernels"]["active"] == "low_latency" and runner.captured is kp_impls.fast
+            assert (scheduler.chunked_prefill_size, scheduler.prefill_decode_interval) == (16384, 0)
+            captures = runner.captures
+            scheduler._prefill_decode_interval_remaining = 150
+            out = json.loads(kp.switch_mode(scheduler, name="latency"))
+            assert out["kernels"]["active"] == kp.ORIGINAL and runner.captures == captures + 1
+            assert (scheduler.chunked_prefill_size, scheduler.prefill_decode_interval) == (4096, 192)
+            assert scheduler._prefill_decode_interval_remaining == 150
+            out = json.loads(kp.switch_mode(scheduler, name="latency_big_chunks"))
+            assert out["kernels"] is None and runner.captures == captures + 1
+            assert (scheduler.chunked_prefill_size, scheduler.prefill_decode_interval) == (16384, 0)
+            assert scheduler._prefill_decode_interval_remaining == 0
+            assert json.loads(kp.list_kernel_profiles(scheduler))["active_mode"] == "latency_big_chunks"
+            with case.assertRaisesRegex(ValueError, "'wrong' are unavailable"):
+                kp.switch_mode(scheduler, name="broken")
+
+            # Live: only with generation paused and no request holding KV, and the
+            # retracted requests' cached prefixes survive (no flush).
+            plan = json.loads(kp.plan_mode(scheduler, name="throughput"))
+            assert plan == {"mode": "throughput", "kernels_change": True, "paused": False, "holds_kv": False}
+            idle["value"] = False  # requests are waiting
+            with case.assertRaisesRegex(RuntimeError, "needs generation paused"):
+                kp.switch_mode(scheduler, name="throughput", live=True)
+            scheduler.pause_state.paused, idle["kv"] = True, True
+            with case.assertRaisesRegex(RuntimeError, "still holds KV"):
+                kp.switch_mode(scheduler, name="throughput", live=True)
+            idle["kv"] = False
+            flushes = idle["flushes"]
+            out = json.loads(kp.switch_mode(scheduler, name="throughput", live=True))
+            assert out["kernels"]["live"] and runner.captured is kp_impls.fast
+            assert idle["flushes"] == flushes
+            out = json.loads(kp.switch_mode(scheduler, name="latency", live=True))
+            assert runner.captured is original_kernel and idle["flushes"] == flushes
+            scheduler.pause_state.paused, idle["value"] = False, True
+
+            # A mode that names no profile or setting is refused when the file loads.
+            for bad, message in (
+                ({"kernels": "nope"}, "names no profile 'nope'"),
+                ({"scheduler": {"max_running_requests": 4}}, "no scheduler setting"),
+            ):
+                with case.assertRaisesRegex(ValueError, message):
+                    kp.KernelProfiles({"modes": {"m": bad}}, ())
 
             # Kernels that turn TF32 on run; coming back stops the engine.
             try:

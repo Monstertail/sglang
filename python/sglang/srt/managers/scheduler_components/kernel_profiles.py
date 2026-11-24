@@ -38,6 +38,25 @@ on every rank and recaptures; if that fails too the engine stops. Coming back to
 Prefill must run eager (``--disable-prefill-cuda-graph``): prefill graphs are not
 recaptured and would keep the kernels they were captured with. A speculative
 draft's graphs are not recaptured either.
+
+A mode is a profile and the scheduler settings that go with it, the unit a
+workload-aware controller moves among::
+
+    "modes": {
+      "low_latency": {"kernels": "original",
+                      "scheduler": {"chunked_prefill_size": 4096,
+                                    "prefill_decode_interval": 192}},
+      "high_throughput": {"kernels": "low_latency_kernels_or_another_profile",
+                          "scheduler": {"chunked_prefill_size": 16384,
+                                        "prefill_decode_interval": 0}}}
+
+``switch_mode`` binds the mode's kernels if they differ, then sets exactly its
+scheduler settings (the startup value for any it does not name), which take effect
+from the next batch. ``live=True`` switches kernels while serving: the engine must
+be paused with its running requests retracted (``pause_generation`` with mode
+``retract``), so no request holds KV while the graphs are recaptured, and the KV
+cache is kept, since an admitted profile computes what the original does.
+``Engine.async_switch_mode`` does the pause and the resume.
 """
 
 import importlib
@@ -63,6 +82,27 @@ logger = logging.getLogger(__name__)
 ORIGINAL = "original"
 DEFAULT_MARGIN_GB = 1.0
 GRAPH_PHASES = ("decode", "target_verify")
+
+
+def _chunk(value):
+    if value is None or int(value) <= 0:
+        return None
+    return int(value)
+
+
+def _count(value):
+    if int(value) < 0:
+        raise ValueError(f"{value} is negative")
+    return int(value)
+
+
+#: Scheduler settings a mode may set, read at every batch, so a new value applies
+#: from the next one.
+SCHEDULER_SETTINGS = {
+    "chunked_prefill_size": _chunk,
+    "prefill_decode_interval": _count,
+    "prefill_decode_interval_min_bs": _count,
+}
 
 
 def _resolve(spec: str):
@@ -156,6 +196,31 @@ class KernelProfiles:
         # True while no verified captured graph matches the bound kernels.
         self.broken = False
         self.switches: List[dict] = []
+        self.modes: Dict[str, dict] = {}
+        for name, mode in (spec.get("modes") or {}).items():
+            kernels = mode.get("kernels", ORIGINAL)
+            if kernels != ORIGINAL and kernels not in self.profiles:
+                raise ValueError(f"mode {name!r} names no profile {kernels!r}")
+            unknown = sorted(set(mode.get("scheduler") or {}) - set(SCHEDULER_SETTINGS))
+            if unknown:
+                raise ValueError(f"mode {name!r}: no scheduler setting {unknown}")
+            settings = {
+                key: SCHEDULER_SETTINGS[key](value)
+                for key, value in (mode.get("scheduler") or {}).items()
+            }
+            self.modes[name] = {"kernels": kernels, "scheduler": settings}
+        self.startup_settings: Dict[str, object] = {}
+        # None after a direct kernel switch, which no mode describes.
+        self.active_mode: Optional[str] = None
+
+    def mode_available(self, name: str) -> Tuple[bool, Optional[str]]:
+        mode = self.modes.get(name)
+        if mode is None:
+            return False, f"no mode {name!r}"
+        kernels = mode["kernels"]
+        if kernels != ORIGINAL and not self.profiles[kernels].available:
+            return False, f"its kernels {kernels!r} are unavailable"
+        return True, None
 
     def bind(self, name: str) -> None:
         """Bind exactly ``name``'s kernels: its replacements, and every other
@@ -167,6 +232,11 @@ class KernelProfiles:
     def describe(self) -> dict:
         return {
             "active": self.active,
+            "active_mode": self.active_mode,
+            "modes": {
+                name: {**mode, "available": self.mode_available(name)[0]}
+                for name, mode in self.modes.items()
+            },
             "broken": self.broken,
             "profiles": {
                 name: {
@@ -205,6 +275,9 @@ def admit(scheduler, path: Optional[str] = None) -> KernelProfiles:
             sys.path.insert(0, entry)
     runner = scheduler.tp_worker.model_runner
     state = KernelProfiles(spec, parameter_layout(runner.model))
+    state.startup_settings = {
+        key: getattr(scheduler, key) for key in SCHEDULER_SETTINGS if hasattr(scheduler, key)
+    }
     guard = ProcessStateGuard(torch)
     before = guard.now()
 
@@ -254,7 +327,17 @@ def admit(scheduler, path: Optional[str] = None) -> KernelProfiles:
     return state
 
 
-def _preflight(scheduler, runner, state: KernelProfiles, name: str) -> str:
+def _paused(scheduler) -> bool:
+    pause_state = getattr(scheduler, "pause_state", None)
+    return bool(pause_state is not None and pause_state.paused)
+
+
+def _holds_kv(scheduler) -> bool:
+    """Whether a request still holds KV (running, or mid chunked prefill)."""
+    return not scheduler.is_fully_idle(ignore_waiting=True)
+
+
+def _preflight(scheduler, runner, state: KernelProfiles, name: str, live: bool = False) -> str:
     parallel = get_parallel()
     if parallel.attn_dp_size > 1 or parallel.pp_size > 1:
         raise RuntimeError("kernel profiles support tensor parallelism only")
@@ -272,7 +355,14 @@ def _preflight(scheduler, runner, state: KernelProfiles, name: str) -> str:
             raise ValueError(f"no kernel profile {name!r}")
         if not profile.available:
             raise ValueError(f"kernel profile {name!r} is unavailable: {profile.reason}")
-    if not scheduler.is_fully_idle():
+    if live:
+        if not _paused(scheduler):
+            raise RuntimeError("a live switch needs generation paused")
+        if _holds_kv(scheduler):
+            raise RuntimeError(
+                "a request still holds KV; pause generation with mode 'retract'"
+            )
+    elif not scheduler.is_fully_idle():
         raise RuntimeError("the engine is serving requests; drain it first")
     usage = getattr(runner, "graph_memory_usage", None) or {}
     need = sum(float(usage.get(p, 0.0)) for p in GRAPH_PHASES) + state.margin_gb
@@ -300,9 +390,11 @@ def _verify_original(scheduler, state: KernelProfiles, what: str) -> None:
         raise SystemExit(f"{what} but {exc}") from exc
 
 
-def _rebind(scheduler, runner, state: KernelProfiles, name: str) -> float:
+def _rebind(scheduler, runner, state: KernelProfiles, name: str, live: bool = False) -> float:
     def drain():
-        if not scheduler.flush_cache():
+        # A live switch keeps the retracted requests' cached prefixes: an admitted
+        # profile computes what the original does.
+        if not live and not scheduler.flush_cache():
             raise RuntimeError("could not flush the KV cache")
         torch.cuda.synchronize()
 
@@ -343,14 +435,11 @@ def _rebind(scheduler, runner, state: KernelProfiles, name: str) -> float:
     return capture_s
 
 
-@register_rpc("switch_kernel_profile")
-def switch_kernel_profile(scheduler, *, name: str) -> str:
+def _switch_kernels(scheduler, runner, state: KernelProfiles, name: str, live: bool) -> dict:
     started = time.perf_counter()
-    runner = scheduler.tp_worker.model_runner
-    state = _state(runner)
 
     def preflight():
-        previous = _preflight(scheduler, runner, state, name)
+        previous = _preflight(scheduler, runner, state, name, live)
         if previous == ORIGINAL and name != ORIGINAL:
             # The engine has served on its original kernels and is about to leave
             # them: this is the state coming back must find again.
@@ -361,18 +450,83 @@ def switch_kernel_profile(scheduler, *, name: str) -> str:
     free_before = min(_gather(scheduler, torch.cuda.mem_get_info()[0] / 2**30))
     capture_s = None
     if name != previous:
-        capture_s = _rebind(scheduler, runner, state, name)
+        capture_s = _rebind(scheduler, runner, state, name, live)
     if name == ORIGINAL and previous != ORIGINAL:
         _verify_original(scheduler, state, "original kernels restored")
-    result = {
+    return {
         "active": name,
         "previous": previous,
+        "live": live,
         "capture_s": capture_s,
         "total_s": time.perf_counter() - started,
         "free_gb_before": round(free_before, 2),
         "free_gb_after": round(
             min(_gather(scheduler, torch.cuda.mem_get_info()[0] / 2**30)), 2
         ),
+    }
+
+
+@register_rpc("switch_kernel_profile")
+def switch_kernel_profile(scheduler, *, name: str, live: bool = False) -> str:
+    state = _state(scheduler.tp_worker.model_runner)
+    result = _switch_kernels(scheduler, scheduler.tp_worker.model_runner, state, name, live)
+    if result["capture_s"] is not None:
+        state.active_mode = None
+    state.switches.append({**result, "at": time.time()})
+    return json.dumps(result)
+
+
+@register_rpc("plan_mode")
+def plan_mode(scheduler, *, name: str) -> str:
+    """What switching to mode ``name`` takes now, without changing anything."""
+    state = _state(scheduler.tp_worker.model_runner)
+    available, reason = state.mode_available(name)
+    if not available:
+        raise ValueError(f"mode {name!r} is unavailable: {reason}")
+    return json.dumps(
+        {
+            "mode": name,
+            "kernels_change": state.modes[name]["kernels"] != state.active,
+            "paused": _paused(scheduler),
+            "holds_kv": _holds_kv(scheduler),
+        }
+    )
+
+
+@register_rpc("switch_mode")
+def switch_mode(scheduler, *, name: str, live: bool = False) -> str:
+    started = time.perf_counter()
+    runner = scheduler.tp_worker.model_runner
+    state = _state(runner)
+    available, reason = state.mode_available(name)
+    if not available:
+        raise ValueError(f"mode {name!r} is unavailable: {reason}")
+    mode = state.modes[name]
+    kernels = None
+    if mode["kernels"] != state.active:
+        kernels = _switch_kernels(scheduler, runner, state, mode["kernels"], live)
+    settings = {**state.startup_settings, **mode["scheduler"]}
+
+    def apply():
+        for key, value in settings.items():
+            setattr(scheduler, key, value)
+        if "prefill_decode_interval" in settings:
+            # A shorter interval must not wait out the remainder of a longer one.
+            scheduler._prefill_decode_interval_remaining = min(
+                getattr(scheduler, "_prefill_decode_interval_remaining", 0),
+                settings["prefill_decode_interval"],
+            )
+        return sorted(settings.items())
+
+    _all_ranks(scheduler, apply)
+    previous_mode = state.active_mode
+    state.active_mode = name
+    result = {
+        "mode": name,
+        "previous_mode": previous_mode,
+        "kernels": kernels,
+        "scheduler": settings,
+        "total_s": time.perf_counter() - started,
     }
     state.switches.append({**result, "at": time.time()})
     return json.dumps(result)
